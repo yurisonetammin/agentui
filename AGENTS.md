@@ -18,6 +18,7 @@
 | [src/shared/event-reducer.ts](src/shared/event-reducer.ts) | 纯函数 `applyRpcEventToTimeline()`，将 RPC 事件归约成时间线条目 |
 | [src/shared/ui-queue.ts](src/shared/ui-queue.ts) | 纯函数多会话 `ExtensionUiRequest` 队列管理 |
 | [src/shared/shortcuts.ts](src/shared/shortcuts.ts) | 纯函数全局快捷键匹配与速查清单 `SHORTCUT_HINTS` |
+| [src/shared/composer-autocomplete.ts](src/shared/composer-autocomplete.ts) | 纯函数 `@file` / `/slash` 触发检测、路径模糊评分与内置斜杠命令解析 |
 | [assets/](assets/) | 应用透明圆角图标资源（`icon.ico` 多分辨率 16–256px、`icon.png` 512px） |
 | [electron/main/index.ts](electron/main/index.ts) | Electron 入口、窗口创建与图标绑定、`AppUserModelId`、`sandbox: true`、`.cjs` preload、`will-navigate` 安全拦截、`AGENTUI_STATE_PATH` |
 | [electron/main/ipc.ts](electron/main/ipc.ts) | 注册所有 `ipcMain.handle` 路由 |
@@ -30,12 +31,13 @@
 | [electron/main/rpc/adapters.ts](electron/main/rpc/adapters.ts) | Pi / OMP / Prime(TS & Rust) 四套 RPC 适配器，统一命令参数、状态与事件语义 |
 | [electron/main/rpc/runtime.ts](electron/main/rpc/runtime.ts) | 单会话子进程生命周期、`negotiate_protocol` 握手、请求 ID 关联、优雅退出 + `taskkill /T /F` |
 | [electron/main/rpc/manager.ts](electron/main/rpc/manager.ts) | `RuntimeManager`，多会话并发隔离进程池、乐观消息插入与时间线缓存 |
-| [electron/main/sessions/catalog.ts](electron/main/sessions/catalog.ts) | 扫描与回放 CLI 原生 `.jsonl` 历史会话 |
+| [electron/main/sessions/catalog.ts](electron/main/sessions/catalog.ts) | 扫描与回放 CLI 原生 `.jsonl` 历史会话、活跃分支树解析与非破坏性分叉文件生成 |
+| [electron/main/workspace-files.ts](electron/main/workspace-files.ts) | `WorkspaceFileService`：基于 `git ls-files -z`（含非 Git 目录回退）与短缓存的 `@file` 文件索引 |
 | [electron/main/git/git-service.ts](electron/main/git/git-service.ts) | `GitService`：`status -z`、staged/unstaged/untracked diff、Stage/Unstage/Discard/Commit、Worktree 增删 |
 | [electron/preload/index.ts](electron/preload/index.ts) | 通过 `contextBridge.exposeInMainWorld('agentui', api)` 暴露只读安全 API |
-| [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、排队式 `ExtensionUiModal`、模型/Thinking 切换、Steer/Follow-up/Abort |
-| [src/renderer/src/components/](src/renderer/src/components/) | `Sidebar`（品牌图标、搜索、双击重命名与快捷键入口）、`DiffPanel`（防竞态 Diff + Worktree）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`、`SettingsModal`、`ShortcutsModal`、`ExtensionUiModal` |
-| [tests/](tests/) | Vitest 单元测试套件（当前 9 个测试文件） |
+| [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、`@file`/`/slash` 补全、图片粘贴/拖拽、分叉树与对比、排队式 `ExtensionUiModal`、模型/Thinking 切换、Steer/Follow-up/Abort |
+| [src/renderer/src/components/](src/renderer/src/components/) | `Sidebar`（品牌图标、搜索、双击重命名与分叉徽标）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（防竞态 Diff + Worktree）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`、`SettingsModal`、`ShortcutsModal`、`ExtensionUiModal` |
+| [tests/](tests/) | Vitest 单元测试套件（当前 11 个测试文件） |
 
 ## 3. 核心工程铁律（修改代码时严禁破坏）
 

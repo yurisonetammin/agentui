@@ -2,13 +2,23 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { dialog, ipcMain, type BrowserWindow } from 'electron'
-import { HARNESS_IDS, type CreateThreadInput, type ExtensionUiResponse, type HarnessId, type SendPromptInput, type ThinkingLevel, type ThreadEntry } from '@shared/types'
+import {
+  HARNESS_IDS,
+  type CreateThreadInput,
+  type ExtensionUiResponse,
+  type ForkThreadInput,
+  type HarnessId,
+  type SendPromptInput,
+  type ThinkingLevel,
+  type ThreadEntry,
+} from '@shared/types'
 import type { HarnessDiscoveryService } from './discovery'
 import type { GitService } from './git/git-service'
 import type { ModelCatalogService } from './model-catalog'
 import type { RuntimeManager } from './rpc/manager'
 import { scanCliSessions } from './sessions/catalog'
 import type { StateStore } from './store'
+import type { WorkspaceFileService } from './workspace-files'
 
 export function registerIpcHandlers(deps: {
   getWindow: () => BrowserWindow | null
@@ -16,9 +26,10 @@ export function registerIpcHandlers(deps: {
   discovery: HarnessDiscoveryService
   models: ModelCatalogService
   git: GitService
+  workspaceFiles: WorkspaceFileService
   runtimeManager: RuntimeManager
 }): void {
-  const { getWindow, store, discovery, models, git, runtimeManager } = deps
+  const { getWindow, store, discovery, models, git, workspaceFiles, runtimeManager } = deps
 
   ipcMain.handle('app:getState', () => store.snapshot())
 
@@ -120,6 +131,8 @@ export function registerIpcHandlers(deps: {
       cwd,
       worktreeBranch: input.worktreeBranch ?? null,
       sessionPath: input.sessionPath ?? null,
+      parentThreadId: input.parentThreadId ?? null,
+      forkedFromEntryId: input.forkedFromEntryId ?? null,
       modelProvider: input.modelProvider ?? null,
       modelId: input.modelId ?? null,
       thinkingLevel: input.thinkingLevel ?? 'medium',
@@ -209,6 +222,22 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle('threads:respondUi', (_e, threadId: string, response: ExtensionUiResponse) => {
     return runtimeManager.respondExtensionUi(threadId, response)
+  })
+
+  ipcMain.handle('workspace:listFiles', (_e, cwd: string, query?: string) => {
+    return workspaceFiles.listFiles(cwd, query ?? '')
+  })
+
+  ipcMain.handle('threads:getCommands', (_e, threadId: string) => {
+    return runtimeManager.getSlashCommands(threadId)
+  })
+
+  ipcMain.handle('threads:getForkTree', (_e, threadId: string) => {
+    return runtimeManager.getForkTree(threadId)
+  })
+
+  ipcMain.handle('threads:fork', (_e, input: ForkThreadInput) => {
+    return runtimeManager.forkThread(input)
   })
 
   ipcMain.handle('sessions:listCli', (_e, harness?: HarnessId) => {

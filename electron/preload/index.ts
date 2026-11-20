@@ -4,6 +4,7 @@ import type {
   CreateThreadInput,
   ExtensionUiRequest,
   ExtensionUiResponse,
+  ForkThreadInput,
   HarnessId,
   SendPromptInput,
   ThinkingLevel,
@@ -47,6 +48,10 @@ const api: AgentUiApi = {
   compactThread: (threadId: string) => ipcRenderer.invoke('threads:compact', threadId),
   respondExtensionUi: (threadId: string, response: ExtensionUiResponse) =>
     ipcRenderer.invoke('threads:respondUi', threadId, response),
+  listWorkspaceFiles: (cwd: string, query?: string) => ipcRenderer.invoke('workspace:listFiles', cwd, query),
+  getThreadCommands: (threadId: string) => ipcRenderer.invoke('threads:getCommands', threadId),
+  getThreadForkTree: (threadId: string) => ipcRenderer.invoke('threads:getForkTree', threadId),
+  forkThread: (input: ForkThreadInput) => ipcRenderer.invoke('threads:fork', input),
   listCliSessions: (harness?: HarnessId) => ipcRenderer.invoke('sessions:listCli', harness),
   gitGetStatus: (cwd: string) => ipcRenderer.invoke('git:status', cwd),
   gitGetDiff: (cwd: string, filePath?: string, staged?: boolean) => ipcRenderer.invoke('git:diff', cwd, filePath, staged),

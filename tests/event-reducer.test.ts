@@ -94,4 +94,52 @@ describe('applyRpcEventToTimeline', () => {
     items = applyRpcEventToTimeline(items, { type: 'runtime_exit', code: 0, signal: null, unexpected: false }, 3)
     expect(items).toHaveLength(1)
   })
+
+  it('extracts image attachments from user message_start and deduplicates optimistic user bubbles', () => {
+    const img = { id: 'opt-img', type: 'image' as const, data: 'AAAA', mimeType: 'image/png' }
+    let items: TimelineItem[] = [
+      { id: 'opt-1', role: 'user', text: 'Inspect screenshot', images: [img], timestamp: 1 },
+    ]
+    // Duplicate echo from runtime should not create a second user bubble
+    items = applyRpcEventToTimeline(
+      items,
+      {
+        type: 'message_start',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect screenshot' },
+            { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+          ],
+          timestamp: 2,
+        },
+      },
+      2,
+    )
+    expect(items).toHaveLength(1)
+
+    // New user message with image should be preserved
+    items = applyRpcEventToTimeline(
+      items,
+      {
+        type: 'message_start',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Second screenshot' },
+            { type: 'image', data: 'BBBB', mimeType: 'image/jpeg' },
+          ],
+          timestamp: 3,
+        },
+      },
+      3,
+    )
+    expect(items).toHaveLength(2)
+    const second = items[1]
+    expect(second.role).toBe('user')
+    if (second.role === 'user') {
+      expect(second.images).toHaveLength(1)
+      expect(second.images?.[0]).toMatchObject({ data: 'BBBB', mimeType: 'image/jpeg' })
+    }
+  })
 })

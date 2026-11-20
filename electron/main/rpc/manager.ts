@@ -1,10 +1,17 @@
+import { randomUUID } from 'node:crypto'
+import { BUILTIN_SLASH_COMMANDS } from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
 import {
   HARNESS_LABELS,
   type ExtensionUiRequest,
   type ExtensionUiResponse,
+  type ForkThreadInput,
+  type ForkThreadResult,
   type RuntimeDisconnectInfo,
   type SendPromptInput,
+  type SessionForkMessage,
+  type SessionTreeSnapshot,
+  type SlashCommandDescriptor,
   type ThinkingLevel,
   type ThreadEntry,
   type ThreadEventEnvelope,
@@ -13,7 +20,7 @@ import {
 } from '@shared/types'
 import type { HarnessDiscoveryService } from '../discovery'
 import { harnessChildEnvironment } from '../process-utils'
-import { readSessionTimeline } from '../sessions/catalog'
+import { createForkedSessionFile, readSessionForkTree, readSessionTimeline } from '../sessions/catalog'
 import type { StateStore } from '../store'
 import { selectHarnessRpcAdapter } from './adapters'
 import { RpcRuntime } from './runtime'
@@ -29,6 +36,7 @@ export class RuntimeManager {
   private readonly startLocks = new Map<string, Promise<RpcRuntime>>()
   private readonly timelines = new Map<string, TimelineItem[]>()
   private readonly lastPrompts = new Map<string, string>()
+  private readonly commandCache = new Map<string, SlashCommandDescriptor[]>()
 
   constructor(
     private readonly store: StateStore,
@@ -71,14 +79,29 @@ export class RuntimeManager {
 
   async sendPrompt(input: SendPromptInput): Promise<void> {
     const thread = this.getThreadOrThrow(input.threadId)
-    const message = input.message.trim()
-    if (!message) throw new Error('消息不能为空')
+    const rawImages = (input.images ?? []).filter((img) => Boolean(img.data && img.mimeType))
+    const message = input.message.trim() || (rawImages.length > 0 ? '请查看附带的图片' : '')
+    if (!message && rawImages.length === 0) throw new Error('消息不能为空')
     this.lastPrompts.set(thread.id, message)
+
+    const wireImages =
+      rawImages.length > 0
+        ? rawImages.map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType }))
+        : undefined
 
     const existing = this.runtimes.get(thread.id)
     if (existing?.alive && existing.streaming) {
-      const cmdType = input.streamingBehavior === 'steer' ? 'steer' : 'follow_up'
-      await existing.sendCommand({ type: cmdType, message })
+      // Extension slash commands execute via `prompt` even during streaming; normal cues use steer/follow_up
+      const cmdType = message.startsWith('/')
+        ? 'prompt'
+        : input.streamingBehavior === 'steer'
+          ? 'steer'
+          : 'follow_up'
+      await existing.sendCommand({
+        type: cmdType,
+        message,
+        ...(wireImages ? { images: wireImages } : {}),
+      })
       return
     }
 
@@ -91,6 +114,7 @@ export class RuntimeManager {
         id: `usr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         role: 'user',
         text: message,
+        images: rawImages.length > 0 ? rawImages : undefined,
         timestamp: Date.now(),
       },
     ])
@@ -107,7 +131,11 @@ export class RuntimeManager {
     }
 
     const runtime = await this.ensureRuntime(thread)
-    await runtime.sendCommand({ type: 'prompt', message })
+    await runtime.sendCommand({
+      type: 'prompt',
+      message,
+      ...(wireImages ? { images: wireImages } : {}),
+    })
   }
 
   async abort(threadId: string): Promise<void> {
@@ -179,6 +207,170 @@ export class RuntimeManager {
     if (!runtime?.alive) throw new Error('Agent 进程未运行')
     await runtime.respondExtensionUi(response)
     this.emitStatus(threadId, runtime.streaming ? 'streaming' : 'idle')
+  }
+
+  async getSlashCommands(threadId: string): Promise<SlashCommandDescriptor[]> {
+    const thread = this.store.snapshot().threads.find((t) => t.id === threadId)
+    const merged: SlashCommandDescriptor[] = [...BUILTIN_SLASH_COMMANDS]
+    if (!thread) return merged
+
+    const cacheKey = `${thread.harness}::${thread.cwd.toLowerCase()}`
+    const runtime = this.runtimes.get(threadId)
+    if (runtime?.alive) {
+      try {
+        const res = await runtime.sendCommand({ type: 'get_commands' }, 5_000)
+        const data = res.data && typeof res.data === 'object' ? (res.data as Record<string, unknown>) : null
+        const rawList = Array.isArray(data?.commands) ? data.commands : []
+        const discovered: SlashCommandDescriptor[] = []
+        for (const entry of rawList) {
+          if (!entry || typeof entry !== 'object') continue
+          const rec = entry as Record<string, unknown>
+          const name = typeof rec.name === 'string' ? rec.name.replace(/^\/+/, '').trim() : ''
+          if (!name) continue
+          const srcRaw = typeof rec.source === 'string' ? rec.source : 'extension'
+          const source: SlashCommandDescriptor['source'] =
+            srcRaw === 'prompt' || srcRaw === 'skill' || srcRaw === 'extension' ? srcRaw : 'extension'
+          discovered.push({
+            name,
+            description: typeof rec.description === 'string' ? rec.description : undefined,
+            source,
+          })
+        }
+        this.commandCache.set(cacheKey, discovered)
+      } catch {
+        // Engine may not support get_commands; use cached or built-in list gracefully
+      }
+    }
+
+    const extra = this.commandCache.get(cacheKey) ?? []
+    const seen = new Set(merged.map((c) => c.name.toLowerCase()))
+    for (const cmd of extra) {
+      if (seen.has(cmd.name.toLowerCase())) continue
+      seen.add(cmd.name.toLowerCase())
+      merged.push(cmd)
+    }
+    return merged
+  }
+
+  async getForkTree(threadId: string): Promise<SessionTreeSnapshot> {
+    const thread = this.getThreadOrThrow(threadId)
+    const runtime = this.runtimes.get(threadId)
+    if (!thread.sessionPath && runtime?.alive) {
+      await runtime.refreshState().catch(() => undefined)
+    }
+    const latestThread = this.getThreadOrThrow(threadId)
+    const snapshot = readSessionForkTree(latestThread.sessionPath)
+    let supportsNativeFork = snapshot.supportsNativeFork
+
+    if (runtime?.alive) {
+      try {
+        const res = await runtime.sendCommand({ type: 'get_fork_messages' }, 5_000)
+        const data = res.data && typeof res.data === 'object' ? (res.data as Record<string, unknown>) : null
+        const liveList = Array.isArray(data?.messages) ? data.messages : []
+        if (liveList.length > 0) {
+          supportsNativeFork = true
+          const existingIds = new Set(snapshot.messages.map((m) => m.entryId))
+          const merged: SessionForkMessage[] = [...snapshot.messages]
+          for (const raw of liveList) {
+            if (!raw || typeof raw !== 'object') continue
+            const rec = raw as Record<string, unknown>
+            const entryId = typeof rec.entryId === 'string' ? rec.entryId : ''
+            const text = typeof rec.text === 'string' ? rec.text.trim() : ''
+            if (!entryId || !text || existingIds.has(entryId)) continue
+            existingIds.add(entryId)
+            merged.push({
+              entryId,
+              parentId: merged[merged.length - 1]?.entryId ?? null,
+              text,
+              depth: merged.length,
+            })
+          }
+          snapshot.messages = merged
+        }
+      } catch {
+        // Fallback cleanly to disk session tree
+      }
+    }
+
+    return {
+      ...snapshot,
+      supportsNativeFork,
+    }
+  }
+
+  async forkThread(input: ForkThreadInput): Promise<ForkThreadResult> {
+    let source = this.getThreadOrThrow(input.threadId)
+    const activeRuntime = this.runtimes.get(source.id)
+    if (!source.sessionPath && activeRuntime?.alive) {
+      await activeRuntime.refreshState().catch(() => undefined)
+      source = this.getThreadOrThrow(input.threadId)
+    }
+
+    if (input.mode === 'in-place') {
+      const runtime = await this.ensureRuntime(source)
+      const cmd = input.entryId ? { type: 'fork', entryId: input.entryId } : { type: 'clone' }
+      const res = await runtime.sendCommand(cmd, 20_000)
+      const data = res.data && typeof res.data === 'object' ? (res.data as Record<string, unknown>) : null
+      if (data?.cancelled === true) {
+        return { thread: source, cancelled: true }
+      }
+      await runtime.refreshState().catch(() => undefined)
+      const updated = this.getThreadOrThrow(source.id)
+      if (updated.sessionPath) {
+        this.timelines.set(updated.id, readSessionTimeline(updated.sessionPath))
+      }
+      return {
+        thread: updated,
+        prefillText: typeof data?.text === 'string' ? data.text : undefined,
+        cancelled: false,
+      }
+    }
+
+    // Non-destructive new-thread fork (side-by-side comparison across same or different engines)
+    if (!source.sessionPath) {
+      throw new Error('当前会话尚未写入历史记录，请先完成至少一轮对话后再分叉')
+    }
+    const { sessionPath: forkedSessionPath, prefillText } = createForkedSessionFile(
+      source.sessionPath,
+      input.entryId ?? null,
+    )
+    const nextHarness = input.harness ?? source.harness
+    const sameHarness = nextHarness === source.harness
+    const now = Date.now()
+    const baseTitle = source.title.replace(/\s*·\s*分叉.*$/, '').slice(0, 28)
+    const suffix = input.entryId ? '分叉' : '克隆'
+    const engineTag = sameHarness ? '' : `(${HARNESS_LABELS[nextHarness]})`
+    const created: ThreadEntry = {
+      id: randomUUID(),
+      projectId: source.projectId,
+      title: input.title?.trim() || `${baseTitle} · ${suffix}${engineTag}`,
+      harness: nextHarness,
+      cwd: source.cwd,
+      worktreeBranch: source.worktreeBranch ?? null,
+      sessionPath: forkedSessionPath,
+      parentThreadId: source.id,
+      forkedFromEntryId: input.entryId ?? null,
+      modelProvider: sameHarness ? (source.modelProvider ?? null) : null,
+      modelId: sameHarness ? (source.modelId ?? null) : null,
+      thinkingLevel: source.thinkingLevel,
+      createdAt: now,
+      updatedAt: now,
+      status: 'idle',
+      lastError: null,
+    }
+
+    this.store.mutate((draft) => {
+      draft.threads.unshift(created)
+      draft.activeThreadId = created.id
+      draft.activeProjectId = created.projectId
+      draft.activeHarness = created.harness
+    })
+    this.timelines.set(created.id, readSessionTimeline(forkedSessionPath))
+    return {
+      thread: created,
+      prefillText,
+      cancelled: false,
+    }
   }
 
   async stopThread(threadId: string): Promise<void> {

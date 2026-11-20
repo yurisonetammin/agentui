@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from 'react'
-import { FolderGit2, FolderPlus, History, Keyboard, Plus, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react'
+import { FolderGit2, FolderPlus, GitFork, History, Keyboard, Plus, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react'
 import brandIcon from '../assets/brand-icon.png'
 import {
   HARNESS_IDS,
@@ -265,6 +265,12 @@ export function Sidebar({
                           <span className={`harness-tag tag-${t.harness}`}>
                             {t.harness === 'prime' ? 'Prime' : HARNESS_LABELS[t.harness]}
                           </span>
+                          {t.parentThreadId && (
+                            <span className="fork-tag" title="分叉自父会话">
+                              <GitFork size={9} />
+                              分叉
+                            </span>
+                          )}
                           {t.worktreeBranch && <span className="branch-tag">⎇ {t.worktreeBranch}</span>}
                         </div>
                       </div>

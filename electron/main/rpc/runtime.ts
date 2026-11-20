@@ -222,7 +222,10 @@ export class RpcRuntime {
     if (
       command.type === 'set_model' ||
       command.type === 'set_thinking_level' ||
-      command.type === 'prompt'
+      command.type === 'prompt' ||
+      command.type === 'fork' ||
+      command.type === 'branch' ||
+      command.type === 'clone'
     ) {
       void this.refreshState().catch(() => undefined)
     }

@@ -8,6 +8,7 @@ import { registerIpcHandlers } from './ipc'
 import { ModelCatalogService } from './model-catalog'
 import { RuntimeManager } from './rpc/manager'
 import { StateStore } from './store'
+import { WorkspaceFileService } from './workspace-files'
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -43,6 +44,7 @@ const store = new StateStore(process.env.AGENTUI_STATE_PATH || undefined)
 const discovery = new HarnessDiscoveryService()
 const models = new ModelCatalogService(discovery)
 const git = new GitService()
+const workspaceFiles = new WorkspaceFileService()
 
 const runtimeManager = new RuntimeManager(store, discovery, {
   onThreadEvent: (envelope) => {
@@ -130,6 +132,7 @@ void app.whenReady().then(async () => {
     discovery,
     models,
     git,
+    workspaceFiles,
     runtimeManager,
   })
   await discovery.refresh(store.snapshot().customBinaryPaths).catch(() => undefined)

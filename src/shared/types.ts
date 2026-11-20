@@ -87,6 +87,8 @@ export interface ThreadEntry {
   cwd: string
   worktreeBranch?: string | null
   sessionPath?: string | null
+  parentThreadId?: string | null
+  forkedFromEntryId?: string | null
   modelProvider?: string | null
   modelId?: string | null
   thinkingLevel: ThinkingLevel
@@ -94,6 +96,58 @@ export interface ThreadEntry {
   updatedAt: number
   status: ThreadRunStatus
   lastError?: string | null
+}
+
+export interface ImageAttachment {
+  id: string
+  type: 'image'
+  data: string
+  mimeType: string
+  name?: string
+  sizeBytes?: number
+}
+
+export interface WorkspaceFileEntry {
+  path: string
+  name: string
+}
+
+export interface SlashCommandDescriptor {
+  name: string
+  description?: string
+  source: 'builtin' | 'extension' | 'prompt' | 'skill'
+  argsHint?: string
+}
+
+export interface SessionForkMessage {
+  entryId: string
+  parentId: string | null
+  text: string
+  timestamp?: number
+  assistantPreview?: string
+  model?: string
+  depth: number
+}
+
+export interface SessionTreeSnapshot {
+  sessionPath: string | null
+  leafId: string | null
+  messages: SessionForkMessage[]
+  supportsNativeFork: boolean
+}
+
+export interface ForkThreadInput {
+  threadId: string
+  entryId?: string | null
+  mode: 'new-thread' | 'in-place'
+  harness?: HarnessId
+  title?: string
+}
+
+export interface ForkThreadResult {
+  thread: ThreadEntry
+  prefillText?: string
+  cancelled?: boolean
 }
 
 export interface TokenUsage {
@@ -132,6 +186,7 @@ export type TimelineItem =
       id: string
       role: 'user'
       text: string
+      images?: ImageAttachment[]
       timestamp: number
     }
   | {
@@ -247,6 +302,8 @@ export interface CreateThreadInput {
   cwd?: string
   worktreeBranch?: string | null
   sessionPath?: string | null
+  parentThreadId?: string | null
+  forkedFromEntryId?: string | null
   modelProvider?: string | null
   modelId?: string | null
   thinkingLevel?: ThinkingLevel
@@ -255,6 +312,7 @@ export interface CreateThreadInput {
 export interface SendPromptInput {
   threadId: string
   message: string
+  images?: ImageAttachment[]
   streamingBehavior?: 'steer' | 'followUp'
 }
 
@@ -281,6 +339,10 @@ export interface AgentUiApi {
   setThreadThinking(threadId: string, level: ThinkingLevel): Promise<void>
   compactThread(threadId: string): Promise<void>
   respondExtensionUi(threadId: string, response: ExtensionUiResponse): Promise<void>
+  listWorkspaceFiles(cwd: string, query?: string): Promise<WorkspaceFileEntry[]>
+  getThreadCommands(threadId: string): Promise<SlashCommandDescriptor[]>
+  getThreadForkTree(threadId: string): Promise<SessionTreeSnapshot>
+  forkThread(input: ForkThreadInput): Promise<ForkThreadResult>
   listCliSessions(harness?: HarnessId): Promise<CliSessionSummary[]>
   gitGetStatus(cwd: string): Promise<GitStatusSummary>
   gitGetDiff(cwd: string, filePath?: string, staged?: boolean): Promise<string>

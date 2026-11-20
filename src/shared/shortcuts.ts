@@ -39,6 +39,9 @@ export const SHORTCUT_HINTS: readonly ShortcutHint[] = [
   { scope: 'composer', keys: ['Enter'], description: '发送指令（运行中默认排队 Follow-up）' },
   { scope: 'composer', keys: ['Shift', 'Enter'], description: '输入框换行' },
   { scope: 'composer', keys: ['Ctrl', 'Enter'], description: '立即发送（运行中触发 Steer 打断并引导）' },
+  { scope: 'composer', keys: ['@'], description: '工作区文件模糊引用补全（Tab / Enter 选中）' },
+  { scope: 'composer', keys: ['/'], description: '斜杠命令与引擎 Skill/模板补全' },
+  { scope: 'composer', keys: ['Ctrl', 'V'], description: '直接粘贴剪贴板截图作为图片附件' },
   { scope: 'composer', keys: ['↑'], description: '输入框为空时回填上一条发送的指令' },
 ]
 

@@ -38,12 +38,12 @@
    - 抽象传输接口，在现有 Pi/OMP/Prime RPC 之外新增 **ACP (`Agent Client Protocol`)**、**Claude Code (`stream-json`)**、**Codex App Server** 与 **`dsh`** 引擎接入。
    - 在 `SettingsModal` 展示引擎能力矩阵（是否支持 steer、worktree/extension UI、context stats、fork）。
 2. **会话分支与历史增强**：
-   - 利用 Pi `fork` / OMP `branch` 协议构建分支树与「从此处分叉」按钮，实现一题多解对比。
-   - 本地会话索引与全文检索（在无 MSVC 时可选 WASM SQLite，或仅保留增量 JSONL 索引）。
+   - [x] 利用 Pi `fork` / OMP `branch` 协议与 `.jsonl` 活跃分支树构建「分叉节点树 + 多方案并行对比」面板，支持从任意历史提问跨引擎分叉并保留原对话。
+   - [ ] 本地会话索引与全文检索（在无 MSVC 时可选 WASM SQLite，或仅保留增量 JSONL 索引）。
 3. **高效输入与文件关联**：
-   - Composer 支持 `@file` 工作区文件模糊补全、`/` 斜杠命令提示与剪贴板图片粘贴。
-   - 右侧面板增加「文件树 + 只读代码高亮」及可选内嵌终端。
-   - 使用 `@tanstack/react-virtual` 优化超长 Tool 输出与千条级时间线渲染性能。
+   - [x] Composer 支持 `@file` 工作区文件模糊补全、`/` 斜杠命令提示（内置命令 + 引擎 `get_commands` Skill/模板）与剪贴板图片粘贴/拖拽上传。
+   - [ ] 右侧面板增加「文件树 + 只读代码高亮」及可选内嵌终端。
+   - [ ] 使用 `@tanstack/react-virtual` 优化超长 Tool 输出与千条级时间线渲染性能。
 
 ---
 

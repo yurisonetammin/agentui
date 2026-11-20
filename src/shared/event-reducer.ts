@@ -1,4 +1,4 @@
-import type { AssistantPart, TimelineItem, TokenUsage, ToolCallItem } from './types'
+import type { AssistantPart, ImageAttachment, TimelineItem, TokenUsage, ToolCallItem } from './types'
 
 type RpcRecord = Record<string, unknown>
 
@@ -21,6 +21,24 @@ function extractTextFromContent(content: unknown): string {
     })
     .filter(Boolean)
     .join('\n')
+}
+
+function extractImagesFromContent(content: unknown, now: number): ImageAttachment[] {
+  if (!Array.isArray(content)) return []
+  const images: ImageAttachment[] = []
+  for (let i = 0; i < content.length; i += 1) {
+    const part = content[i]
+    if (!isRecord(part)) continue
+    if (part.type === 'image' && typeof part.data === 'string' && typeof part.mimeType === 'string') {
+      images.push({
+        id: `img-${now}-${i}`,
+        type: 'image',
+        data: part.data,
+        mimeType: part.mimeType,
+      })
+    }
+  }
+  return images
 }
 
 function extractToolOutputText(result: unknown): string {
@@ -135,14 +153,22 @@ export function applyRpcEventToTimeline(
     const role = msg ? asString(msg.role) : undefined
     if (role === 'user') {
       const text = extractTextFromContent(msg?.content)
-      if (!text) return items
+      const images = extractImagesFromContent(msg?.content, now)
+      if (!text && images.length === 0) return items
       const last = items[items.length - 1]
-      if (last && last.role === 'user' && last.text === text) {
+      if (last && last.role === 'user' && last.text === text && (last.images?.length ?? 0) === images.length) {
         return items
       }
       // Avoid duplicating if the user message immediately preceded an open assistant placeholder
       const prevUser = items.length >= 2 ? items[items.length - 2] : undefined
-      if (last?.role === 'assistant' && last.streaming && last.parts.length === 0 && prevUser?.role === 'user' && prevUser.text === text) {
+      if (
+        last?.role === 'assistant' &&
+        last.streaming &&
+        last.parts.length === 0 &&
+        prevUser?.role === 'user' &&
+        prevUser.text === text &&
+        (prevUser.images?.length ?? 0) === images.length
+      ) {
         return items
       }
       return [
@@ -151,6 +177,7 @@ export function applyRpcEventToTimeline(
           id: `usr-${now}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'user',
           text,
+          images: images.length > 0 ? images : undefined,
           timestamp: typeof msg?.timestamp === 'number' ? msg.timestamp : now,
         },
       ]

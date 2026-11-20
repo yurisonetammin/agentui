@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   GitBranch,
+  GitFork,
+  ImagePlus,
   Minimize2,
   PanelRight,
   RefreshCw,
@@ -12,6 +14,13 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import {
+  BUILTIN_SLASH_COMMANDS,
+  applyTriggerInsertion,
+  detectComposerTrigger,
+  filterSlashCommands,
+  parseBuiltinSlashCommand,
+} from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
 import { matchGlobalShortcut } from '@shared/shortcuts'
 import { dequeueUiRequest, enqueueUiRequest, pruneUiRequestsForThread } from '@shared/ui-queue'
@@ -25,21 +34,55 @@ import {
   type GitStatusSummary,
   type HarnessId,
   type HarnessStatus,
+  type ImageAttachment,
   type ModelCatalogResult,
   type ProjectEntry,
   type RuntimeDisconnectInfo,
+  type SessionTreeSnapshot,
+  type SlashCommandDescriptor,
   type ThinkingLevel,
   type ThreadEntry,
   type TimelineItem,
+  type WorkspaceFileEntry,
 } from '@shared/types'
+import { ComposerAutocomplete } from './components/ComposerAutocomplete'
 import { DiffPanel } from './components/DiffPanel'
 import { ExtensionUiModal } from './components/ExtensionUiModal'
+import { ForkTreeModal } from './components/ForkTreeModal'
 import { MarkdownView } from './components/MarkdownView'
 import { SettingsModal } from './components/SettingsModal'
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { Sidebar } from './components/Sidebar'
 import { ThinkingBlock } from './components/ThinkingBlock'
 import { ToolCallCard } from './components/ToolCallCard'
+
+const MAX_IMAGES_PER_PROMPT = 4
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+function readImageAsAttachment(file: File): Promise<ImageAttachment> {
+  return new Promise((resolveFile, rejectFile) => {
+    const reader = new FileReader()
+    reader.onerror = () => rejectFile(new Error(`读取图片失败: ${file.name || '剪贴板图片'}`))
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      const commaIdx = dataUrl.indexOf(',')
+      if (commaIdx === -1) {
+        rejectFile(new Error('无法解析图片 Base64 数据'))
+        return
+      }
+      const data = dataUrl.slice(commaIdx + 1)
+      resolveFile({
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: 'image',
+        data,
+        mimeType: file.type || 'image/png',
+        name: file.name || 'clipboard-image.png',
+        sizeBytes: file.size,
+      })
+    }
+    reader.readAsDataURL(file)
+  })
+}
 
 export function App() {
   const [harnesses, setHarnesses] = useState<Record<HarnessId, HarnessStatus>>({
@@ -62,6 +105,11 @@ export function App() {
   const [diffPanelTab, setDiffPanelTab] = useState<'changes' | 'worktrees'>('changes')
   const [showSettings, setShowSettings] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showForkModal, setShowForkModal] = useState(false)
+  const [forkModalTab, setForkModalTab] = useState<'tree' | 'compare'>('tree')
+  const [forkHighlightText, setForkHighlightText] = useState<string | null>(null)
+  const [forkTree, setForkTree] = useState<SessionTreeSnapshot | null>(null)
+  const [forkTreeLoading, setForkTreeLoading] = useState(false)
   const [pendingUiQueue, setPendingUiQueue] = useState<ExtensionUiRequest[]>([])
   const [statusTexts, setStatusTexts] = useState<Record<string, string | null>>({})
   const [disconnectInfos, setDisconnectInfos] = useState<Record<string, RuntimeDisconnectInfo | null>>({})
@@ -69,11 +117,22 @@ export function App() {
   const [showStderrDetail, setShowStderrDetail] = useState(false)
   const [reconnectingThreadId, setReconnectingThreadId] = useState<string | null>(null)
   const [promptText, setPromptText] = useState('')
+  const [composerCursor, setComposerCursor] = useState(0)
+  const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
+  const [previewImage, setPreviewImage] = useState<ImageAttachment | null>(null)
+  const [dragOverComposer, setDragOverComposer] = useState(false)
+  const [fileSuggestions, setFileSuggestions] = useState<WorkspaceFileEntry[]>([])
+  const [fileSuggestionsLoading, setFileSuggestionsLoading] = useState(false)
+  const [slashCommands, setSlashCommands] = useState<SlashCommandDescriptor[]>([...BUILTIN_SLASH_COMMANDS])
+  const [acSelectedIndex, setAcSelectedIndex] = useState(0)
+  const [acDismissedKey, setAcDismissedKey] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
   const timelineEndRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const filterInputRef = useRef<HTMLInputElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const fileReqIdRef = useRef(0)
 
   const activeThread = useMemo(
     () => threads.find((t) => t.id === activeThreadId) ?? null,
@@ -86,12 +145,25 @@ export function App() {
   )
 
   const effectiveHarness: HarnessId = activeThread?.harness ?? activeHarness
+  const effectiveCwd = activeThread?.cwd ?? activeProject?.path ?? null
   const activeCatalog = catalogs[effectiveHarness]
   const activeTimeline = activeThread ? timelines[activeThread.id] ?? [] : []
   const isStreaming =
     activeThread?.status === 'streaming' ||
     activeThread?.status === 'starting' ||
     activeThread?.status === 'compacting'
+
+  const activeTrigger = useMemo(
+    () => detectComposerTrigger(promptText, composerCursor),
+    [promptText, composerCursor],
+  )
+  const triggerKey = activeTrigger ? `${activeTrigger.kind}:${activeTrigger.start}:${activeTrigger.query}` : null
+  const showAutocomplete = Boolean(activeTrigger && triggerKey !== acDismissedKey)
+  const filteredSlashCommands = useMemo(
+    () => (activeTrigger?.kind === 'slash' ? filterSlashCommands(slashCommands, activeTrigger.query) : []),
+    [slashCommands, activeTrigger],
+  )
+  const activeAcCount = activeTrigger?.kind === 'file' ? fileSuggestions.length : filteredSlashCommands.length
 
   const refreshGit = useCallback(async (cwd?: string) => {
     if (!cwd) {
@@ -210,7 +282,58 @@ export function App() {
 
   useEffect(() => {
     setShowStderrDetail(false)
+    setAttachedImages([])
   }, [activeThreadId])
+
+  useEffect(() => {
+    if (!activeThread) {
+      setSlashCommands([...BUILTIN_SLASH_COMMANDS])
+      return
+    }
+    let cancelled = false
+    void window.agentui
+      .getThreadCommands(activeThread.id)
+      .then((cmds) => {
+        if (!cancelled && cmds.length > 0) setSlashCommands(cmds)
+      })
+      .catch(() => {
+        if (!cancelled) setSlashCommands([...BUILTIN_SLASH_COMMANDS])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeThread?.id, activeThread?.status])
+
+  useEffect(() => {
+    setAcSelectedIndex(0)
+  }, [triggerKey])
+
+  useEffect(() => {
+    if (!showAutocomplete || activeTrigger?.kind !== 'file' || !effectiveCwd) {
+      if (activeTrigger?.kind !== 'file') setFileSuggestions([])
+      setFileSuggestionsLoading(false)
+      return
+    }
+    const reqId = (fileReqIdRef.current += 1)
+    setFileSuggestionsLoading(true)
+    const timer = setTimeout(() => {
+      void window.agentui
+        .listWorkspaceFiles(effectiveCwd, activeTrigger.query)
+        .then((list) => {
+          if (fileReqIdRef.current === reqId) {
+            setFileSuggestions(list)
+            setFileSuggestionsLoading(false)
+          }
+        })
+        .catch(() => {
+          if (fileReqIdRef.current === reqId) {
+            setFileSuggestions([])
+            setFileSuggestionsLoading(false)
+          }
+        })
+    }, 60)
+    return () => clearTimeout(timer)
+  }, [showAutocomplete, activeTrigger?.kind, activeTrigger?.query, effectiveCwd])
 
   useEffect(() => {
     timelineEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
@@ -279,9 +402,158 @@ export function App() {
     )
   }
 
-  async function handleSend(behavior?: 'steer' | 'followUp') {
-    if (!promptText.trim()) return
+  async function addImageFiles(fileList: FileList | File[]) {
+    const incoming = Array.from(fileList).filter((f) => f.type.startsWith('image/'))
+    if (incoming.length === 0) return
     setActionError(null)
+
+    const remaining = MAX_IMAGES_PER_PROMPT - attachedImages.length
+    if (remaining <= 0) {
+      setActionError(`单条消息最多附加 ${MAX_IMAGES_PER_PROMPT} 张图片`)
+      return
+    }
+
+    const accepted: ImageAttachment[] = []
+    for (const file of incoming.slice(0, remaining)) {
+      if (file.size > MAX_IMAGE_BYTES) {
+        setActionError(`图片 ${file.name || ''} 超过 10MB 上限，已跳过`)
+        continue
+      }
+      try {
+        accepted.push(await readImageAsAttachment(file))
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err))
+      }
+    }
+    if (accepted.length > 0) {
+      setAttachedImages((prev) => [...prev, ...accepted].slice(0, MAX_IMAGES_PER_PROMPT))
+    }
+  }
+
+  function applyComposerAutocomplete(replacement: string) {
+    if (!activeTrigger) return
+    const { nextText, nextCursor } = applyTriggerInsertion(promptText, activeTrigger, replacement)
+    setPromptText(nextText)
+    setComposerCursor(nextCursor)
+    setAcDismissedKey(null)
+    requestAnimationFrame(() => {
+      composerRef.current?.focus()
+      composerRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
+  async function refreshForkTreeFor(threadId: string) {
+    setForkTreeLoading(true)
+    try {
+      const snap = await window.agentui.getThreadForkTree(threadId)
+      setForkTree(snap)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setForkTreeLoading(false)
+    }
+  }
+
+  async function openForkModal(tab: 'tree' | 'compare' = 'tree', highlightText?: string | null) {
+    if (!activeThread) {
+      setActionError('请先选择一个会话后再查看分叉树')
+      return
+    }
+    setForkModalTab(tab)
+    setForkHighlightText(highlightText ?? null)
+    setShowForkModal(true)
+    await refreshForkTreeFor(activeThread.id)
+  }
+
+  async function handleForkThread(input: { entryId?: string | null; mode: 'new-thread' | 'in-place'; harness?: HarnessId }) {
+    if (!activeThread) return
+    setActionError(null)
+    const result = await window.agentui.forkThread({
+      threadId: activeThread.id,
+      entryId: input.entryId ?? null,
+      mode: input.mode,
+      harness: input.harness,
+    })
+    if (result.cancelled) return
+
+    if (input.mode === 'new-thread') {
+      setThreads((prev) => [result.thread, ...prev])
+      setActiveThreadId(result.thread.id)
+      setActiveHarness(result.thread.harness)
+    } else {
+      setThreads((prev) => prev.map((t) => (t.id === result.thread.id ? result.thread : t)))
+    }
+    const items = await window.agentui.getThreadTimeline(result.thread.id)
+    setTimelines((prev) => ({ ...prev, [result.thread.id]: items }))
+    setShowForkModal(false)
+    if (result.prefillText) {
+      setPromptText(result.prefillText)
+      setComposerCursor(result.prefillText.length)
+      requestAnimationFrame(() => {
+        composerRef.current?.focus()
+        composerRef.current?.setSelectionRange(result.prefillText!.length, result.prefillText!.length)
+      })
+    }
+  }
+
+  async function handleSend(behavior?: 'steer' | 'followUp') {
+    const trimmed = promptText.trim()
+    if (!trimmed && attachedImages.length === 0) return
+    setActionError(null)
+
+    // Execute built-in workbench slash commands directly before sending to CLI
+    if (attachedImages.length === 0) {
+      const builtin = parseBuiltinSlashCommand(trimmed)
+      if (builtin) {
+        setPromptText('')
+        setComposerCursor(0)
+        if (builtin.type === 'new') {
+          if (activeProject) await handleNewThread(activeProject.id, effectiveHarness)
+          else await handleAddProject()
+        } else if (builtin.type === 'diff') {
+          setDiffPanelTab('changes')
+          setShowDiffPanel(true)
+        } else if (builtin.type === 'worktree') {
+          setDiffPanelTab('worktrees')
+          setShowDiffPanel(true)
+        } else if (builtin.type === 'shortcuts') {
+          setShowShortcuts(true)
+        } else if (builtin.type === 'settings') {
+          setShowSettings(true)
+        } else if (builtin.type === 'fork') {
+          await openForkModal('tree')
+        } else if (builtin.type === 'clone') {
+          try {
+            await handleForkThread({ entryId: null, mode: 'new-thread' })
+          } catch (err) {
+            setActionError(err instanceof Error ? err.message : String(err))
+          }
+        } else if (builtin.type === 'compact') {
+          if (!activeThread) setActionError('请先选择一个会话')
+          else await window.agentui.compactThread(activeThread.id).catch((e) => setActionError(String(e)))
+        } else if (builtin.type === 'reconnect') {
+          if (!activeThread) setActionError('请先选择一个会话')
+          else await handleReconnect(activeThread.id)
+        } else if (builtin.type === 'retry') {
+          if (!activeThread || !retryPromptCandidate) setActionError('当前会话没有可重试的上一条指令')
+          else await handleRetryLastPrompt(activeThread.id, retryPromptCandidate)
+        } else if (builtin.type === 'thinking') {
+          if (!activeThread) {
+            setActionError('请先选择一个会话')
+          } else {
+            await window.agentui
+              .setThreadThinking(activeThread.id, builtin.level)
+              .then(() => {
+                setThreads((prev) =>
+                  prev.map((t) => (t.id === activeThread.id ? { ...t, thinkingLevel: builtin.level } : t)),
+                )
+              })
+              .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+          }
+        }
+        return
+      }
+    }
 
     let targetThread = activeThread
     if (!targetThread) {
@@ -295,14 +567,25 @@ export function App() {
     }
 
     const msg = promptText
+    const imagesToSend = attachedImages
+    const displayText = msg.trim() || (imagesToSend.length > 0 ? '请查看附带的图片' : '')
     setPromptText('')
+    setComposerCursor(0)
+    setAttachedImages([])
+    setAcDismissedKey(null)
 
     if (!isStreaming) {
       setTimelines((prev) => ({
         ...prev,
         [targetThread!.id]: [
           ...(prev[targetThread!.id] ?? []),
-          { id: `opt-${Date.now()}`, role: 'user', text: msg.trim(), timestamp: Date.now() },
+          {
+            id: `opt-${Date.now()}`,
+            role: 'user',
+            text: displayText,
+            images: imagesToSend.length > 0 ? imagesToSend : undefined,
+            timestamp: Date.now(),
+          },
         ],
       }))
     }
@@ -310,7 +593,8 @@ export function App() {
     try {
       await window.agentui.sendPrompt({
         threadId: targetThread.id,
-        message: msg,
+        message: displayText,
+        images: imagesToSend.length > 0 ? imagesToSend : undefined,
         streamingBehavior: behavior,
       })
     } catch (err) {
@@ -419,6 +703,16 @@ export function App() {
 
     if (action === 'escape') {
       if (targetEl?.classList?.contains('inline-rename-input')) return
+      if (previewImage) {
+        e.preventDefault()
+        setPreviewImage(null)
+        return
+      }
+      if (showForkModal) {
+        e.preventDefault()
+        setShowForkModal(false)
+        return
+      }
       if (showShortcuts) {
         e.preventDefault()
         setShowShortcuts(false)
@@ -429,6 +723,7 @@ export function App() {
         setShowSettings(false)
         return
       }
+      if (showAutocomplete) return
       if (activePendingUi) return
       if (isStreaming && activeThread) {
         e.preventDefault()
@@ -582,15 +877,26 @@ export function App() {
               </span>
             )}
             {activeThread && (
-              <button
-                type="button"
-                className="btn-small"
-                title="压缩当前上下文"
-                onClick={() => void window.agentui.compactThread(activeThread.id).catch((e) => setActionError(String(e)))}
-              >
-                <Minimize2 size={12} />
-                Compact
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn-small"
+                  title="查看会话分叉树与多方案对比 (/fork)"
+                  onClick={() => void openForkModal('tree')}
+                >
+                  <GitFork size={12} />
+                  分叉 / 对比
+                </button>
+                <button
+                  type="button"
+                  className="btn-small"
+                  title="压缩当前上下文 (/compact)"
+                  onClick={() => void window.agentui.compactThread(activeThread.id).catch((e) => setActionError(String(e)))}
+                >
+                  <Minimize2 size={12} />
+                  Compact
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -633,8 +939,36 @@ export function App() {
             activeTimeline.map((item) => {
               if (item.role === 'user') {
                 return (
-                  <div key={item.id} className="msg-user">
-                    {item.text}
+                  <div key={item.id} className="msg-user-wrap">
+                    <div className="msg-user">
+                      {item.images && item.images.length > 0 && (
+                        <div className="msg-user-images">
+                          {item.images.map((img) => (
+                            <img
+                              key={img.id}
+                              src={`data:${img.mimeType};base64,${img.data}`}
+                              alt={img.name ?? 'image'}
+                              className="msg-user-image"
+                              title="点击放大查看"
+                              onClick={() => setPreviewImage(img)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {item.text}
+                    </div>
+                    <div className="msg-user-actions">
+                      <button
+                        type="button"
+                        className="btn-small"
+                        style={{ padding: '2px 7px', fontSize: 10.5 }}
+                        title="从此条提问分叉出新分支进行多方案对比"
+                        onClick={() => void openForkModal('tree', item.text)}
+                      >
+                        <GitFork size={10} />
+                        从此处分叉
+                      </button>
+                    </div>
                   </div>
                 )
               }
@@ -747,19 +1081,162 @@ export function App() {
         )}
 
         <div className="composer-wrap">
-          <div className="composer-box">
+          {showAutocomplete && activeTrigger && (
+            <ComposerAutocomplete
+              kind={activeTrigger.kind}
+              query={activeTrigger.query}
+              files={fileSuggestions}
+              commands={filteredSlashCommands}
+              selectedIndex={acSelectedIndex}
+              loading={fileSuggestionsLoading}
+              onHoverIndex={setAcSelectedIndex}
+              onSelectFile={(entry) => applyComposerAutocomplete(`@${entry.path}`)}
+              onSelectCommand={(cmd) => {
+                applyComposerAutocomplete(`/${cmd.name}`)
+              }}
+            />
+          )}
+
+          <div
+            className={`composer-box ${dragOverComposer ? 'drag-over' : ''}`}
+            onDragOver={(e) => {
+              if (Array.from(e.dataTransfer.types).includes('Files')) {
+                e.preventDefault()
+                setDragOverComposer(true)
+              }
+            }}
+            onDragLeave={() => setDragOverComposer(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOverComposer(false)
+              if (e.dataTransfer.files?.length) {
+                void addImageFiles(e.dataTransfer.files)
+              }
+            }}
+          >
+            {attachedImages.length > 0 && (
+              <div className="composer-attachments">
+                {attachedImages.map((img) => (
+                  <div key={img.id} className="attachment-chip">
+                    <img
+                      src={`data:${img.mimeType};base64,${img.data}`}
+                      alt={img.name ?? 'image'}
+                      className="attachment-thumb"
+                      title="点击放大预览"
+                      onClick={() => setPreviewImage(img)}
+                    />
+                    <div className="attachment-meta">
+                      <span className="attachment-name" title={img.name}>
+                        {img.name ?? '剪贴板图片'}
+                      </span>
+                      {img.sizeBytes !== undefined && (
+                        <span className="attachment-size">{Math.max(1, Math.round(img.sizeBytes / 1024))} KB</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      style={{ width: 20, height: 20 }}
+                      title="移除图片"
+                      onClick={() => setAttachedImages((prev) => prev.filter((item) => item.id !== img.id))}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                if (e.target.files?.length) {
+                  void addImageFiles(e.target.files)
+                  e.target.value = ''
+                }
+              }}
+            />
+
             <textarea
               ref={composerRef}
               className="composer-textarea"
               placeholder={
                 activeThread
-                  ? `向 ${HARNESS_LABELS[activeThread.harness]} 发送指令（Enter 发送，Shift+Enter 换行，Ctrl+Enter ${isStreaming ? 'Steer 引导' : '发送'}，Ctrl+/ 查看快捷键）...`
-                  : '先添加项目或选择一个会话（Ctrl+N 新建，Ctrl+/ 查看快捷键）...'
+                  ? `向 ${HARNESS_LABELS[activeThread.harness]} 发送指令（@ 引用文件，/ 斜杠命令，Ctrl+V 粘贴截图，Enter 发送）...`
+                  : '先添加项目或选择一个会话（Ctrl+N 新建，@ 引用文件，/ 斜杠命令）...'
               }
               value={promptText}
-              onChange={(e) => setPromptText(e.target.value)}
+              onChange={(e) => {
+                setPromptText(e.target.value)
+                setComposerCursor(e.target.selectionStart ?? e.target.value.length)
+                setAcDismissedKey(null)
+              }}
+              onClick={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
+              onKeyUp={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
+              onSelect={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
+              onPaste={(e) => {
+                const items = e.clipboardData?.items
+                if (!items) return
+                const imgFiles: File[] = []
+                for (const item of Array.from(items)) {
+                  if (item.type.startsWith('image/')) {
+                    const f = item.getAsFile()
+                    if (f) imgFiles.push(f)
+                  }
+                }
+                if (imgFiles.length > 0) {
+                  if (!e.clipboardData.getData('text/plain')) {
+                    e.preventDefault()
+                  }
+                  void addImageFiles(imgFiles)
+                }
+              }}
               onKeyDown={(e) => {
                 if (e.nativeEvent.isComposing) return
+
+                if (showAutocomplete && activeTrigger) {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setAcDismissedKey(triggerKey)
+                    return
+                  }
+                  if (e.key === 'ArrowDown' && activeAcCount > 0) {
+                    e.preventDefault()
+                    setAcSelectedIndex((i) => (i + 1) % activeAcCount)
+                    return
+                  }
+                  if (e.key === 'ArrowUp' && activeAcCount > 0) {
+                    e.preventDefault()
+                    setAcSelectedIndex((i) => (i - 1 + activeAcCount) % activeAcCount)
+                    return
+                  }
+                  if ((e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)) && activeAcCount > 0) {
+                    const safeIdx = Math.min(acSelectedIndex, activeAcCount - 1)
+                    if (activeTrigger.kind === 'file') {
+                      e.preventDefault()
+                      const entry = fileSuggestions[safeIdx]
+                      if (entry) applyComposerAutocomplete(`@${entry.path}`)
+                      return
+                    }
+                    const cmd = filteredSlashCommands[safeIdx]
+                    const exactParameterlessEnter =
+                      e.key === 'Enter' &&
+                      cmd &&
+                      !cmd.argsHint &&
+                      cmd.name.toLowerCase() === activeTrigger.query.toLowerCase()
+                    if (!exactParameterlessEnter) {
+                      e.preventDefault()
+                      if (cmd) applyComposerAutocomplete(`/${cmd.name}`)
+                      return
+                    }
+                  }
+                }
+
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                   e.preventDefault()
                   void handleSend(isStreaming ? 'steer' : undefined)
@@ -773,6 +1250,7 @@ export function App() {
                 if (e.key === 'ArrowUp' && !promptText && lastUserPromptInTimeline) {
                   e.preventDefault()
                   setPromptText(lastUserPromptInTimeline)
+                  setComposerCursor(lastUserPromptInTimeline.length)
                 }
               }}
             />
@@ -842,6 +1320,16 @@ export function App() {
                   ))}
                 </select>
 
+                <button
+                  type="button"
+                  className="btn-small"
+                  title="上传图片附件（或直接在输入框 Ctrl+V 粘贴截图 / 拖拽图片）"
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <ImagePlus size={12} />
+                  图片{attachedImages.length > 0 ? ` (${attachedImages.length})` : ''}
+                </button>
+
                 {activeProject && (
                   <button
                     type="button"
@@ -864,7 +1352,7 @@ export function App() {
                     <button
                       type="button"
                       className="btn-small"
-                      disabled={!promptText.trim()}
+                      disabled={!promptText.trim() && attachedImages.length === 0}
                       title="打断并引导当前轮次 (Ctrl+Enter)"
                       onClick={() => void handleSend('steer')}
                     >
@@ -893,7 +1381,7 @@ export function App() {
                 <button
                   type="button"
                   className="btn-primary"
-                  disabled={!promptText.trim()}
+                  disabled={!promptText.trim() && attachedImages.length === 0}
                   onClick={() => void handleSend(isStreaming ? 'followUp' : undefined)}
                 >
                   <Send size={13} />
@@ -972,6 +1460,41 @@ export function App() {
       )}
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+
+      {showForkModal && activeThread && (
+        <ForkTreeModal
+          activeThread={activeThread}
+          allThreads={threads}
+          timelines={timelines}
+          tree={forkTree}
+          loading={forkTreeLoading}
+          initialTab={forkModalTab}
+          highlightText={forkHighlightText}
+          onFork={handleForkThread}
+          onSelectThread={(tid) => {
+            setActiveThreadId(tid)
+            void window.agentui.setActiveThread(tid)
+          }}
+          onLoadTimeline={(tid) => {
+            void window.agentui.getThreadTimeline(tid).then((items) => {
+              setTimelines((prev) => ((prev[tid]?.length ?? 0) > 0 ? prev : { ...prev, [tid]: items }))
+            })
+          }}
+          onRefresh={() => void refreshForkTreeFor(activeThread.id)}
+          onClose={() => setShowForkModal(false)}
+        />
+      )}
+
+      {previewImage && (
+        <div className="modal-backdrop" onClick={() => setPreviewImage(null)}>
+          <img
+            src={`data:${previewImage.mimeType};base64,${previewImage.data}`}
+            alt={previewImage.name ?? 'preview'}
+            className="image-lightbox"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   )
 }
