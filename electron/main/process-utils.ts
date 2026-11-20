@@ -83,6 +83,59 @@ export const HARNESS_DESCRIPTORS: Record<HarnessId, HarnessDescriptor> = {
     agentDir: (home, env) => env.PRIME_AGENT_CODING_AGENT_DIR || join(home, '.prime', 'agent'),
     sessionRoot: (home, env) => join(env.PRIME_AGENT_CODING_AGENT_DIR || join(home, '.prime', 'agent'), 'sessions'),
   },
+  claude: {
+    id: 'claude',
+    name: 'Claude Code',
+    binaryEnvVar: 'CLAUDE_BINARY',
+    executableNames: (platform) => (platform === 'win32' ? ['claude.exe', 'claude.cmd'] : ['claude']),
+    candidateDirs: (platform, home, env) => {
+      if (platform === 'win32') {
+        return [
+          env.CLAUDE_CODE_DIR ? win32.join(env.CLAUDE_CODE_DIR, 'bin') : '',
+          win32.join(home, '.local', 'bin'),
+        ].filter(Boolean)
+      }
+      return [join(home, '.local', 'bin'), join(home, '.claude', 'local')]
+    },
+    agentDir: (home) => join(home, '.claude'),
+    sessionRoot: (home) => join(home, '.claude', 'projects'),
+  },
+  codex: {
+    id: 'codex',
+    name: 'Codex',
+    binaryEnvVar: 'CODEX_BINARY',
+    executableNames: (platform) => (platform === 'win32' ? ['codex.exe', 'codex.cmd'] : ['codex']),
+    candidateDirs: (platform, home) => {
+      if (platform === 'win32') return [win32.join(home, '.codex', 'bin')]
+      return [join(home, '.codex', 'bin'), join(home, '.local', 'bin')]
+    },
+    agentDir: (home) => join(home, '.codex'),
+    sessionRoot: (home) => join(home, '.codex', 'sessions'),
+  },
+  acp: {
+    id: 'acp',
+    name: 'ACP',
+    binaryEnvVar: 'ACP_BINARY',
+    executableNames: (platform) =>
+      platform === 'win32'
+        ? ['gemini.exe', 'gemini.cmd', 'qwen.exe', 'qwen.cmd', 'claude-code-acp.cmd', 'claude-code-acp.exe']
+        : ['gemini', 'qwen', 'claude-code-acp'],
+    candidateDirs: () => [],
+    agentDir: (home) => join(home, '.acp'),
+    sessionRoot: (home) => join(home, '.acp', 'sessions'),
+  },
+  dsh: {
+    id: 'dsh',
+    name: 'dsh',
+    binaryEnvVar: 'DSH_BINARY',
+    executableNames: (platform) => (platform === 'win32' ? ['dsh.exe', 'dsh.cmd'] : ['dsh']),
+    candidateDirs: (platform, home, env) => {
+      const dshHome = env.DSH_HOME || (platform === 'win32' ? win32.join(home, '.dsh') : join(home, '.dsh'))
+      return [platform === 'win32' ? win32.join(dshHome, 'bin') : join(dshHome, 'bin')]
+    },
+    agentDir: (home, env) => env.DSH_HOME || join(home, '.dsh'),
+    sessionRoot: (home, env) => join(env.DSH_HOME || join(home, '.dsh'), 'sessions'),
+  },
 }
 
 export interface ProcessResult {
@@ -351,6 +404,48 @@ export function prepareExecutableSpawn(
     }
   }
 
+  if (base === 'claude.cmd') {
+    const entry = win32.join(binDir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
+    if (canAccess(entry, fsConstants.F_OK)) {
+      const nodeExe = findNodeExecutable(childEnv, 'win32', binDir, canAccess)
+      if (!nodeExe) throw new Error('Node.js was not found for Claude Code npm shim')
+      return { file: nodeExe, args: [entry, ...args], env: childEnv }
+    }
+  }
+
+  if (base === 'codex.cmd') {
+    for (const rel of [
+      ['node_modules', '@openai', 'codex', 'bin', 'codex.js'],
+      ['node_modules', '@openai', 'codex', 'dist', 'bin', 'codex.js'],
+    ]) {
+      const entry = win32.join(binDir, ...rel)
+      if (canAccess(entry, fsConstants.F_OK)) {
+        const nodeExe = findNodeExecutable(childEnv, 'win32', binDir, canAccess)
+        if (!nodeExe) throw new Error('Node.js was not found for Codex npm shim')
+        return { file: nodeExe, args: [entry, ...args], env: childEnv }
+      }
+    }
+  }
+
+  // Generic npm `.cmd` shim fallback (gemini / qwen / dsh / claude-code-acp ...):
+  // parse the `%~dp0...js` entry referenced by the shim and run it with node.exe.
+  if (base.endsWith('.cmd')) {
+    try {
+      const shimText = readText(file)
+      const match = shimText.match(/%~dp0\\?"?([^"\r\n]+?\.js)/i)
+      if (match) {
+        const relEntry = match[1].replace(/^[\\/]+/, '').replace(/\\/g, win32.sep)
+        const entry = win32.resolve(binDir, relEntry)
+        if (canAccess(entry, fsConstants.F_OK)) {
+          const nodeExe = findNodeExecutable(childEnv, 'win32', binDir, canAccess)
+          if (nodeExe) return { file: nodeExe, args: [entry, ...args], env: childEnv }
+        }
+      }
+    } catch {
+      // fall through to raw spawn
+    }
+  }
+
   return { file, args: [...args], env: childEnv }
 }
 
@@ -591,5 +686,15 @@ export function restrictedGitEnvironment(): NodeJS.ProcessEnv {
 
 export function isPathInside(parent: string, child: string): boolean {
   const rel = (process.platform === 'win32' ? win32 : posix).relative(resolve(parent), resolve(child))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (!/^\.\.([\\/]|$)/.test(rel) && !isAbsolute(rel))
+}
+
+/** Symlink-aware containment check: resolves real paths before comparing. */
+export function isRealPathInside(parent: string, child: string): boolean {
+  if (!isPathInside(parent, child)) return false
+  try {
+    return isPathInside(realpathSync(parent), realpathSync(child))
+  } catch {
+    return false
+  }
 }

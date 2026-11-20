@@ -32,6 +32,7 @@ const api: AgentUiApi = {
   addProject: (dirPath: string) => ipcRenderer.invoke('projects:add', dirPath),
   removeProject: (projectId: string) => ipcRenderer.invoke('projects:remove', projectId),
   setActiveProject: (projectId: string | null) => ipcRenderer.invoke('projects:setActive', projectId),
+  setProjectTrust: (projectId, preset) => ipcRenderer.invoke('projects:setTrust', projectId, preset),
   createThread: (input: CreateThreadInput) => ipcRenderer.invoke('threads:create', input),
   deleteThread: (threadId: string) => ipcRenderer.invoke('threads:delete', threadId),
   setActiveThread: (threadId: string | null) => ipcRenderer.invoke('threads:setActive', threadId),
@@ -49,6 +50,15 @@ const api: AgentUiApi = {
   respondExtensionUi: (threadId: string, response: ExtensionUiResponse) =>
     ipcRenderer.invoke('threads:respondUi', threadId, response),
   listWorkspaceFiles: (cwd: string, query?: string) => ipcRenderer.invoke('workspace:listFiles', cwd, query),
+  listWorkspaceDir: (cwd: string, relPath?: string) => ipcRenderer.invoke('workspace:listDir', cwd, relPath),
+  readWorkspaceFile: (cwd: string, relPath: string) => ipcRenderer.invoke('workspace:readFile', cwd, relPath),
+  terminalStart: (cwd: string, command: string) => ipcRenderer.invoke('terminal:start', cwd, command),
+  terminalStop: (runId: string) => ipcRenderer.invoke('terminal:stop', runId),
+  browserStatus: (refresh?: boolean) => ipcRenderer.invoke('browser:status', refresh),
+  browserSpaces: () => ipcRenderer.invoke('browser:spaces'),
+  browserTabs: () => ipcRenderer.invoke('browser:tabs'),
+  browserOpen: (url: string) => ipcRenderer.invoke('browser:open', url),
+  browserScreenshot: () => ipcRenderer.invoke('browser:screenshot'),
   getThreadCommands: (threadId: string) => ipcRenderer.invoke('threads:getCommands', threadId),
   getThreadForkTree: (threadId: string) => ipcRenderer.invoke('threads:getForkTree', threadId),
   forkThread: (input: ForkThreadInput) => ipcRenderer.invoke('threads:fork', input),
@@ -67,6 +77,8 @@ const api: AgentUiApi = {
   onThreadEvent: (cb: (envelope: ThreadEventEnvelope) => void) => subscribe('agentui:threadEvent', cb),
   onThreadStatus: (cb: (update: ThreadStatusUpdate) => void) => subscribe('agentui:threadStatus', cb),
   onExtensionUiRequest: (cb: (req: ExtensionUiRequest) => void) => subscribe('agentui:extensionUiRequest', cb),
+  onTerminalOutput: (cb) => subscribe('agentui:terminalOutput', cb),
+  onTerminalExit: (cb) => subscribe('agentui:terminalExit', cb),
 }
 
 contextBridge.exposeInMainWorld('agentui', api)

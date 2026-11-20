@@ -1,6 +1,12 @@
-import { useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Wrench, XCircle } from 'lucide-react'
 import type { ToolCallItem } from '@shared/types'
+
+const VIRTUAL_LINE_THRESHOLD = 400
+const LINE_HEIGHT = 17
+const VIRTUAL_VIEWPORT_HEIGHT = 320
+const MAX_ARGS_CHARS = 20_000
 
 function summarizeArgs(tool: ToolCallItem): string {
   const args = tool.args
@@ -16,9 +22,65 @@ function summarizeArgs(tool: ToolCallItem): string {
   return ''
 }
 
+/** Renders tool output; switches to line-based virtual scrolling for huge outputs. */
+function ToolOutputView({ text }: { text: string }) {
+  const lines = useMemo(() => text.split('\n'), [text])
+  const parentRef = useRef<HTMLDivElement | null>(null)
+  const virtualized = lines.length > VIRTUAL_LINE_THRESHOLD
+  const virtualizer = useVirtualizer({
+    count: lines.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => LINE_HEIGHT,
+    overscan: 24,
+    enabled: virtualized,
+  })
+
+  if (!virtualized) {
+    return <pre className="tool-pre">{text}</pre>
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: '#68768f', marginBottom: 3 }}>
+        共 {lines.length.toLocaleString()} 行 · 虚拟滚动渲染
+      </div>
+      <div ref={parentRef} className="tool-pre-virtual" style={{ height: VIRTUAL_VIEWPORT_HEIGHT }}>
+        <div
+          style={{
+            height: virtualizer.getTotalSize(),
+            position: 'relative',
+            minWidth: '100%',
+            width: 'max-content',
+          }}
+        >
+          {virtualizer.getVirtualItems().map((vItem) => (
+            <div
+              key={vItem.index}
+              className="tool-pre-line"
+              style={{
+                position: 'absolute',
+                top: vItem.start,
+                left: 0,
+                height: LINE_HEIGHT,
+                lineHeight: `${LINE_HEIGHT}px`,
+              }}
+            >
+              {lines[vItem.index] || ' '}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ToolCallCard({ tool }: { tool: ToolCallItem }) {
   const [open, setOpen] = useState(tool.status === 'error')
   const summary = summarizeArgs(tool)
+  const argsText =
+    tool.argsText.length > MAX_ARGS_CHARS
+      ? `${tool.argsText.slice(0, MAX_ARGS_CHARS)}\n... [参数过长，已截断 ${tool.argsText.length - MAX_ARGS_CHARS} 字符]`
+      : tool.argsText
 
   return (
     <div className="tool-card">
@@ -42,10 +104,10 @@ export function ToolCallCard({ tool }: { tool: ToolCallItem }) {
       </button>
       {open && (
         <div className="tool-body">
-          {tool.argsText && (
+          {argsText && (
             <div>
               <div style={{ fontSize: 11, color: '#68768f', marginBottom: 4 }}>参数</div>
-              <pre className="tool-pre">{tool.argsText}</pre>
+              <pre className="tool-pre">{argsText}</pre>
             </div>
           )}
           {tool.output && (
@@ -53,7 +115,7 @@ export function ToolCallCard({ tool }: { tool: ToolCallItem }) {
               <div style={{ fontSize: 11, color: tool.isError ? '#f87171' : '#68768f', marginBottom: 4 }}>
                 {tool.isError ? '错误输出' : '执行结果'}
               </div>
-              <pre className="tool-pre">{tool.output}</pre>
+              <ToolOutputView text={tool.output} />
             </div>
           )}
         </div>

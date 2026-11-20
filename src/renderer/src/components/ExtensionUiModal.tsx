@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, ShieldAlert } from 'lucide-react'
 import type { ExtensionUiRequest, ExtensionUiResponse } from '@shared/types'
+import { TRUST_PRESET_LABELS } from '@shared/tool-policy'
 
 export function ExtensionUiModal({
   request,
@@ -26,6 +27,11 @@ export function ExtensionUiModal({
             <span>{request.title}</span>
           </h3>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {request.policyPreset && (
+              <span className="mono-chip" title="当前项目的工具权限预设">
+                {TRUST_PRESET_LABELS[request.policyPreset]}
+              </span>
+            )}
             {(harnessLabel || threadTitle) && (
               <span className="mono-chip" style={{ maxWidth: 210 }} title={threadTitle}>
                 {[harnessLabel, threadTitle].filter(Boolean).join(' · ')}
@@ -36,6 +42,34 @@ export function ExtensionUiModal({
             )}
           </div>
         </div>
+        {request.risk?.level === 'high' && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'flex-start',
+              padding: '9px 12px',
+              borderRadius: 8,
+              border: '1px solid rgba(248, 113, 113, 0.55)',
+              background: 'rgba(248, 113, 113, 0.10)',
+              color: '#fca5a5',
+              fontSize: 12.5,
+              lineHeight: 1.6,
+            }}
+          >
+            <ShieldAlert size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div>
+              <div style={{ fontWeight: 700 }}>检测到高风险操作，请仔细核对后再确认</div>
+              {request.risk.reasons.length > 0 && (
+                <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
+                  {request.risk.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
         {request.message && (
           <div style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{request.message}</div>
         )}

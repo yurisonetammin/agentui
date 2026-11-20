@@ -1,4 +1,9 @@
+import { basename } from 'node:path'
 import type { ContextUsageInfo, HarnessId, PrimeImplementation, ThinkingLevel } from '@shared/types'
+import type { BridgeStartInfo, ProtocolBridge } from './bridge'
+import { AcpBridge } from './bridges/acp'
+import { ClaudeStreamJsonBridge, sessionIdFromPath } from './bridges/claude'
+import { CodexAppServerBridge } from './bridges/codex'
 import type { RpcObject } from './chunk-assembly'
 
 export interface HarnessStartArgsInput {
@@ -7,6 +12,8 @@ export interface HarnessStartArgsInput {
   providerId?: string | null
   modelId?: string | null
   thinkingLevel?: ThinkingLevel
+  /** Resolved engine executable path (used to pick ACP flavor flags). */
+  executablePath?: string
 }
 
 export interface HarnessStateReading {
@@ -23,6 +30,12 @@ export interface HarnessRpcAdapter {
   translateCommand(command: RpcObject): RpcObject
   normalizeEvent(event: RpcObject): RpcObject | readonly RpcObject[] | null
   readState(data: RpcObject): HarnessStateReading
+  /**
+   * Engines with a non-Pi native wire protocol provide a ProtocolBridge.
+   * When present, RpcRuntime routes all frames/commands through the bridge
+   * instead of normalizeEvent/translateCommand.
+   */
+  createBridge?: (info: BridgeStartInfo) => ProtocolBridge
 }
 
 function isRecord(value: unknown): value is RpcObject {
@@ -166,11 +179,94 @@ export const PRIME_RUST_RPC_ADAPTER: HarnessRpcAdapter = {
   },
 }
 
+export const CLAUDE_RPC_ADAPTER: HarnessRpcAdapter = {
+  id: 'claude',
+  agentName: 'Claude Code',
+  chunkedFrames: false,
+  buildStartArgs: (input) => {
+    const args = [
+      '-p',
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--permission-prompt-tool', 'stdio',
+    ]
+    const resumeId = sessionIdFromPath(input.sessionPath)
+    if (resumeId) {
+      if (unsafeArgValue(resumeId)) throw new TypeError('Invalid session id')
+      args.push('--resume', resumeId)
+    }
+    if (input.modelId) {
+      if (unsafeArgValue(input.modelId)) throw new TypeError('Invalid model id')
+      args.push('--model', input.modelId)
+    }
+    return args
+  },
+  translateCommand: (command) => command,
+  normalizeEvent: (event) => event,
+  readState: (data) => {
+    const contextUsage = parseContextUsage(data.contextUsage)
+    return contextUsage ? { contextUsage } : {}
+  },
+  createBridge: (info) => new ClaudeStreamJsonBridge(info),
+}
+
+export const CODEX_RPC_ADAPTER: HarnessRpcAdapter = {
+  id: 'codex',
+  agentName: 'Codex',
+  chunkedFrames: false,
+  buildStartArgs: () => ['app-server'],
+  translateCommand: (command) => command,
+  normalizeEvent: (event) => event,
+  readState: (data) => {
+    const contextUsage = parseContextUsage(data.contextUsage)
+    return contextUsage ? { contextUsage } : {}
+  },
+  createBridge: (info) => new CodexAppServerBridge(info),
+}
+
+function acpStartArgs(executablePath: string | undefined): string[] {
+  const exe = basename(executablePath ?? '').toLowerCase()
+  // Gemini CLI / Qwen Code expose ACP behind an experimental flag; dedicated
+  // ACP agents (claude-code-acp, dsh --profile acp handled separately) speak it natively.
+  if (exe.startsWith('gemini') || exe.startsWith('qwen')) return ['--experimental-acp']
+  return []
+}
+
+export const ACP_RPC_ADAPTER: HarnessRpcAdapter = {
+  id: 'acp',
+  agentName: 'ACP Agent',
+  chunkedFrames: false,
+  buildStartArgs: (input) => acpStartArgs(input.executablePath),
+  translateCommand: (command) => command,
+  normalizeEvent: (event) => event,
+  readState: () => ({}),
+  createBridge: (info) =>
+    new AcpBridge(info, { sessionPrefix: 'acp:', engineLabel: 'ACP Agent' }),
+}
+
+export const DSH_RPC_ADAPTER: HarnessRpcAdapter = {
+  id: 'dsh',
+  agentName: 'DeepSeek Harness',
+  chunkedFrames: false,
+  buildStartArgs: () => ['--profile', 'acp'],
+  translateCommand: (command) => command,
+  normalizeEvent: (event) => event,
+  readState: () => ({}),
+  createBridge: (info) =>
+    new AcpBridge(info, { sessionPrefix: 'dsh:', engineLabel: 'dsh' }),
+}
+
 export function selectHarnessRpcAdapter(
   harness: HarnessId,
   primeImplementation?: PrimeImplementation,
 ): HarnessRpcAdapter {
   if (harness === 'pi') return PI_RPC_ADAPTER
   if (harness === 'omp') return OMP_RPC_ADAPTER
+  if (harness === 'claude') return CLAUDE_RPC_ADAPTER
+  if (harness === 'codex') return CODEX_RPC_ADAPTER
+  if (harness === 'acp') return ACP_RPC_ADAPTER
+  if (harness === 'dsh') return DSH_RPC_ADAPTER
   return primeImplementation === 'typescript' ? PRIME_RPC_ADAPTER : PRIME_RUST_RPC_ADAPTER
 }

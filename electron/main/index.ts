@@ -3,11 +3,14 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, nativeImage, shell } from 'electron'
 import { HarnessDiscoveryService } from './discovery'
+import { BrowserCompanionService } from './browser-companion'
 import { GitService } from './git/git-service'
 import { registerIpcHandlers } from './ipc'
 import { ModelCatalogService } from './model-catalog'
 import { RuntimeManager } from './rpc/manager'
 import { StateStore } from './store'
+import { TerminalService } from './terminal-service'
+import { WorkspaceBrowserService } from './workspace-browser'
 import { WorkspaceFileService } from './workspace-files'
 
 let mainWindow: BrowserWindow | null = null
@@ -45,6 +48,19 @@ const discovery = new HarnessDiscoveryService()
 const models = new ModelCatalogService(discovery)
 const git = new GitService()
 const workspaceFiles = new WorkspaceFileService()
+const workspaceBrowser = new WorkspaceBrowserService()
+const browserCompanion = new BrowserCompanionService(() => store.snapshot().projects.map((p) => p.path))
+
+function sendToWindow(channel: string, payload: unknown): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
+}
+
+const terminal = new TerminalService({
+  onOutput: (event) => sendToWindow('agentui:terminalOutput', event),
+  onExit: (event) => sendToWindow('agentui:terminalExit', event),
+})
 
 const runtimeManager = new RuntimeManager(store, discovery, {
   onThreadEvent: (envelope) => {
@@ -74,7 +90,7 @@ function createMainWindow(): void {
     minWidth: 1020,
     minHeight: 640,
     backgroundColor: '#0e1116',
-    title: 'AgentUI — Pi / OMP / Prime Agent',
+    title: 'AgentUI — 多引擎编码 Agent 工作台',
     icon: resolveAppIcon(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -133,6 +149,9 @@ void app.whenReady().then(async () => {
     models,
     git,
     workspaceFiles,
+    workspaceBrowser,
+    browserCompanion,
+    terminal,
     runtimeManager,
   })
   await discovery.refresh(store.snapshot().customBinaryPaths).catch(() => undefined)
@@ -151,7 +170,7 @@ app.on('before-quit', (event) => {
   if (isQuitting) return
   event.preventDefault()
   isQuitting = true
-  void runtimeManager.stopAll().finally(() => {
+  void Promise.allSettled([runtimeManager.stopAll(), terminal.stopAll()]).finally(() => {
     app.exit(0)
   })
 })

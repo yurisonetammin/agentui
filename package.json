@@ -2,7 +2,7 @@
   "name": "agentui",
   "version": "0.1.0",
   "private": true,
-  "description": "Multi-harness coding agent desktop workspace for Pi, OMP, and Prime Agent",
+  "description": "Multi-harness coding agent desktop workspace for Pi, OMP, Prime Agent, Claude Code, Codex, ACP and dsh",
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
@@ -14,6 +14,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.26",
+    "highlight.js": "^11.12.0",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

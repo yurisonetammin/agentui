@@ -4,6 +4,8 @@ export type GlobalShortcutAction =
   | 'focus-composer'
   | 'toggle-diff'
   | 'open-worktrees'
+  | 'open-files'
+  | 'open-terminal'
   | 'switch-pi'
   | 'switch-omp'
   | 'switch-prime'
@@ -31,8 +33,10 @@ export const SHORTCUT_HINTS: readonly ShortcutHint[] = [
   { scope: 'global', keys: ['Ctrl', 'K'], description: '聚焦侧栏搜索过滤框' },
   { scope: 'global', keys: ['Ctrl', 'L'], description: '聚焦主指令输入框' },
   { scope: 'global', keys: ['Ctrl', '1 / 2 / 3'], description: '快速切换 Pi / OMP / Prime Agent' },
-  { scope: 'global', keys: ['Ctrl', 'Shift', 'D'], description: '展开 / 收起右侧 Diff 审阅抽屉' },
+  { scope: 'global', keys: ['Ctrl', 'Shift', 'D'], description: '展开 / 收起右侧工作区抽屉（变更审阅）' },
   { scope: 'global', keys: ['Ctrl', 'Shift', 'W'], description: '打开右侧 Worktree 管理面板' },
+  { scope: 'global', keys: ['Ctrl', 'Shift', 'E'], description: '打开右侧工作区文件树与只读预览' },
+  { scope: 'global', keys: ['Ctrl', 'Shift', 'T'], description: '打开右侧内嵌终端面板' },
   { scope: 'global', keys: ['Ctrl', ','], description: '打开 / 关闭引擎路径与环境设置' },
   { scope: 'global', keys: ['Ctrl', '/'], description: '打开 / 关闭快捷键速查面板' },
   { scope: 'global', keys: ['Esc'], description: '关闭当前弹窗；流式输出中则中止当前生成' },
@@ -60,6 +64,8 @@ export function matchGlobalShortcut(ev: ShortcutKeyEventLike): GlobalShortcutAct
   if (ev.shiftKey) {
     if (key === 'd') return 'toggle-diff'
     if (key === 'w') return 'open-worktrees'
+    if (key === 'e') return 'open-files'
+    if (key === 't') return 'open-terminal'
     return null
   }
 

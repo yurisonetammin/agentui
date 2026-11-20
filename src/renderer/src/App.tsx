@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   AlertTriangle,
   GitBranch,
   GitFork,
+  Globe,
   ImagePlus,
   Minimize2,
   PanelRight,
@@ -46,10 +48,12 @@ import {
   type WorkspaceFileEntry,
 } from '@shared/types'
 import { ComposerAutocomplete } from './components/ComposerAutocomplete'
-import { DiffPanel } from './components/DiffPanel'
+import { BrowserPanel } from './components/BrowserPanel'
+import { DiffPanel, type WorkspacePanelTab } from './components/DiffPanel'
 import { ExtensionUiModal } from './components/ExtensionUiModal'
 import { ForkTreeModal } from './components/ForkTreeModal'
 import { MarkdownView } from './components/MarkdownView'
+import { ProjectTrustModal } from './components/ProjectTrustModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { Sidebar } from './components/Sidebar'
@@ -85,11 +89,15 @@ function readImageAsAttachment(file: File): Promise<ImageAttachment> {
 }
 
 export function App() {
-  const [harnesses, setHarnesses] = useState<Record<HarnessId, HarnessStatus>>({
-    pi: { id: 'pi', name: 'Pi', path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
-    omp: { id: 'omp', name: 'OMP', path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
-    prime: { id: 'prime', name: 'Prime Agent', path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
-  })
+  const [harnesses, setHarnesses] = useState<Record<HarnessId, HarnessStatus>>(
+    () =>
+      Object.fromEntries(
+        HARNESS_IDS.map((id) => [
+          id,
+          { id, name: HARNESS_LABELS[id], path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
+        ]),
+      ) as Record<HarnessId, HarnessStatus>,
+  )
   const [customPaths, setCustomPaths] = useState<Partial<Record<HarnessId, string>>>({})
   const [activeHarness, setActiveHarness] = useState<HarnessId>('pi')
   const [projects, setProjects] = useState<ProjectEntry[]>([])
@@ -102,8 +110,11 @@ export function App() {
   const [cliSessions, setCliSessions] = useState<CliSessionSummary[]>([])
   const [gitStatus, setGitStatus] = useState<GitStatusSummary | null>(null)
   const [showDiffPanel, setShowDiffPanel] = useState(true)
-  const [diffPanelTab, setDiffPanelTab] = useState<'changes' | 'worktrees'>('changes')
+  const [diffPanelTab, setDiffPanelTab] = useState<WorkspacePanelTab>('changes')
   const [showSettings, setShowSettings] = useState(false)
+  const [trustProjectId, setTrustProjectId] = useState<string | null>(null)
+  const [showBrowserPanel, setShowBrowserPanel] = useState(false)
+  const [browserShotBusy, setBrowserShotBusy] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showForkModal, setShowForkModal] = useState(false)
   const [forkModalTab, setForkModalTab] = useState<'tree' | 'compare'>('tree')
@@ -128,7 +139,8 @@ export function App() {
   const [acDismissedKey, setAcDismissedKey] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  const timelineEndRef = useRef<HTMLDivElement | null>(null)
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null)
+  const stickToBottomRef = useRef(true)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const filterInputRef = useRef<HTMLInputElement | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
@@ -148,6 +160,16 @@ export function App() {
   const effectiveCwd = activeThread?.cwd ?? activeProject?.path ?? null
   const activeCatalog = catalogs[effectiveHarness]
   const activeTimeline = activeThread ? timelines[activeThread.id] ?? [] : []
+
+  // Virtualized timeline: only visible items are mounted; heights are measured
+  // dynamically so streaming growth and long tool outputs stay smooth.
+  const timelineVirtualizer = useVirtualizer({
+    count: activeTimeline.length,
+    getScrollElement: () => timelineScrollRef.current,
+    estimateSize: () => 140,
+    overscan: 6,
+    getItemKey: (index) => activeTimeline[index]?.id ?? index,
+  })
   const isStreaming =
     activeThread?.status === 'streaming' ||
     activeThread?.status === 'starting' ||
@@ -336,7 +358,17 @@ export function App() {
   }, [showAutocomplete, activeTrigger?.kind, activeTrigger?.query, effectiveCwd])
 
   useEffect(() => {
-    timelineEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+    stickToBottomRef.current = true
+  }, [activeThreadId])
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return
+    const el = timelineScrollRef.current
+    if (!el) return
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(raf)
   }, [activeTimeline, activeThreadId])
 
   async function handleAddProject() {
@@ -756,6 +788,12 @@ export function App() {
     } else if (action === 'open-worktrees') {
       setDiffPanelTab('worktrees')
       setShowDiffPanel(true)
+    } else if (action === 'open-files') {
+      setDiffPanelTab('files')
+      setShowDiffPanel(true)
+    } else if (action === 'open-terminal') {
+      setDiffPanelTab('terminal')
+      setShowDiffPanel(true)
     } else if (action === 'switch-pi') {
       void handleSwitchComposerHarness('pi')
     } else if (action === 'switch-omp') {
@@ -786,6 +824,73 @@ export function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
+
+  function renderTimelineItem(item: TimelineItem) {
+    if (item.role === 'user') {
+      return (
+        <div className="msg-user-wrap">
+          <div className="msg-user">
+            {item.images && item.images.length > 0 && (
+              <div className="msg-user-images">
+                {item.images.map((img) => (
+                  <img
+                    key={img.id}
+                    src={`data:${img.mimeType};base64,${img.data}`}
+                    alt={img.name ?? 'image'}
+                    className="msg-user-image"
+                    title="点击放大查看"
+                    onClick={() => setPreviewImage(img)}
+                  />
+                ))}
+              </div>
+            )}
+            {item.text}
+          </div>
+          <div className="msg-user-actions">
+            <button
+              type="button"
+              className="btn-small"
+              style={{ padding: '2px 7px', fontSize: 10.5 }}
+              title="从此条提问分叉出新分支进行多方案对比"
+              onClick={() => void openForkModal('tree', item.text)}
+            >
+              <GitFork size={10} />
+              从此处分叉
+            </button>
+          </div>
+        </div>
+      )
+    }
+    if (item.role === 'notice') {
+      return <div className={`msg-notice ${item.kind}`}>{item.text}</div>
+    }
+    return (
+      <div className="msg-assistant">
+        {item.parts.map((part, idx) => {
+          if (part.type === 'thinking') {
+            return <ThinkingBlock key={idx} text={part.text} streaming={item.streaming} />
+          }
+          if (part.type === 'tool') {
+            const tool = item.toolCalls[part.toolCallId]
+            if (!tool) return null
+            return <ToolCallCard key={part.toolCallId} tool={tool} />
+          }
+          return <MarkdownView key={idx} content={part.text} />
+        })}
+        {item.errorMessage && <div className="msg-notice error">{item.errorMessage}</div>}
+        <div className="msg-meta">
+          {item.streaming && <span>输出中...</span>}
+          {item.model && <span>{item.model}</span>}
+          {item.usage && (
+            <span>
+              tokens: {item.usage.totalTokens.toLocaleString()}
+              {item.usage.costTotal ? ` · $${item.usage.costTotal.toFixed(4)}` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="app-shell">
@@ -822,6 +927,7 @@ export function App() {
             .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
         }}
         onNewThread={(pid, harness) => void handleNewThread(pid, harness)}
+        onOpenTrust={(pid) => setTrustProjectId(pid)}
         onSelectThread={(tid) => {
           setActiveThreadId(tid)
           void window.agentui.setActiveThread(tid)
@@ -901,25 +1007,41 @@ export function App() {
             <button
               type="button"
               className="btn-small"
-              title="展开 / 收起右侧 Diff 抽屉 (Ctrl+Shift+D)"
+              title="浏览器协同：ego-browser / 浏览器型 MCP 状态与快捷控制"
+              onClick={() => setShowBrowserPanel(true)}
+            >
+              <Globe size={13} />
+              浏览器
+            </button>
+            <button
+              type="button"
+              className="btn-small"
+              title="展开 / 收起右侧工作区抽屉：变更 / Worktree / 文件 / 终端 (Ctrl+Shift+D)"
               onClick={() => setShowDiffPanel((v) => !v)}
             >
               <PanelRight size={13} />
-              Diff / Worktree
+              工作区面板
             </button>
           </div>
         </header>
 
-        <div className="timeline-scroll">
+        <div
+          className="timeline-scroll"
+          ref={timelineScrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          }}
+        >
           {actionError && <div className="msg-notice error">{actionError}</div>}
 
           {!activeThread || activeTimeline.length === 0 ? (
             <div className="empty-state">
-              <h2>Pi · OMP · Prime Agent 多引擎工作台</h2>
+              <h2>多引擎编码 Agent 工作台</h2>
               <p>
                 {activeThread
                   ? `当前会话绑定 ${HARNESS_LABELS[activeThread.harness]}，工作目录：${activeThread.cwd}`
-                  : '在左侧添加项目并选择任意引擎（Pi / OMP / Prime Agent），即可开始流式对话与代码改动审阅。'}
+                  : '在左侧添加项目并选择任意引擎（Pi / OMP / Prime / Claude Code / Codex / ACP / dsh），即可开始流式对话与代码改动审阅。'}
               </p>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                 {HARNESS_IDS.map((id) => (
@@ -936,78 +1058,35 @@ export function App() {
               </div>
             </div>
           ) : (
-            activeTimeline.map((item) => {
-              if (item.role === 'user') {
+            <div
+              style={{
+                height: timelineVirtualizer.getTotalSize(),
+                width: '100%',
+                position: 'relative',
+              }}
+            >
+              {timelineVirtualizer.getVirtualItems().map((vItem) => {
+                const item = activeTimeline[vItem.index]
+                if (!item) return null
                 return (
-                  <div key={item.id} className="msg-user-wrap">
-                    <div className="msg-user">
-                      {item.images && item.images.length > 0 && (
-                        <div className="msg-user-images">
-                          {item.images.map((img) => (
-                            <img
-                              key={img.id}
-                              src={`data:${img.mimeType};base64,${img.data}`}
-                              alt={img.name ?? 'image'}
-                              className="msg-user-image"
-                              title="点击放大查看"
-                              onClick={() => setPreviewImage(img)}
-                            />
-                          ))}
-                        </div>
-                      )}
-                      {item.text}
-                    </div>
-                    <div className="msg-user-actions">
-                      <button
-                        type="button"
-                        className="btn-small"
-                        style={{ padding: '2px 7px', fontSize: 10.5 }}
-                        title="从此条提问分叉出新分支进行多方案对比"
-                        onClick={() => void openForkModal('tree', item.text)}
-                      >
-                        <GitFork size={10} />
-                        从此处分叉
-                      </button>
-                    </div>
+                  <div
+                    key={vItem.key}
+                    data-index={vItem.index}
+                    ref={timelineVirtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vItem.start}px)`,
+                    }}
+                  >
+                    {renderTimelineItem(item)}
                   </div>
                 )
-              }
-              if (item.role === 'notice') {
-                return (
-                  <div key={item.id} className={`msg-notice ${item.kind}`}>
-                    {item.text}
-                  </div>
-                )
-              }
-              return (
-                <div key={item.id} className="msg-assistant">
-                  {item.parts.map((part, idx) => {
-                    if (part.type === 'thinking') {
-                      return <ThinkingBlock key={idx} text={part.text} streaming={item.streaming} />
-                    }
-                    if (part.type === 'tool') {
-                      const tool = item.toolCalls[part.toolCallId]
-                      if (!tool) return null
-                      return <ToolCallCard key={part.toolCallId} tool={tool} />
-                    }
-                    return <MarkdownView key={idx} content={part.text} />
-                  })}
-                  {item.errorMessage && <div className="msg-notice error">{item.errorMessage}</div>}
-                  <div className="msg-meta">
-                    {item.streaming && <span>输出中...</span>}
-                    {item.model && <span>{item.model}</span>}
-                    {item.usage && (
-                      <span>
-                        tokens: {item.usage.totalTokens.toLocaleString()}
-                        {item.usage.costTotal ? ` · $${item.usage.costTotal.toFixed(4)}` : ''}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )
-            })
+              })}
+            </div>
           )}
-          <div ref={timelineEndRef} />
         </div>
 
         {showDisconnectBanner && activeThread && disconnectReason && (
@@ -1416,6 +1495,10 @@ export function App() {
             await window.agentui.gitRemoveWorktree(activeProject.path, wtPath, false)
             await refreshGit(activeThread.cwd)
           }}
+          onReferenceFile={(relPath) => {
+            setPromptText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@${relPath} `)
+            requestAnimationFrame(() => composerRef.current?.focus())
+          }}
         />
       )}
 
@@ -1460,6 +1543,67 @@ export function App() {
       )}
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+
+      {showBrowserPanel && (
+        <BrowserPanel
+          onClose={() => setShowBrowserPanel(false)}
+          screenshotBusy={browserShotBusy}
+          onScreenshot={() => {
+            if (browserShotBusy) return
+            if (attachedImages.length >= MAX_IMAGES_PER_PROMPT) {
+              setActionError(`单条消息最多附加 ${MAX_IMAGES_PER_PROMPT} 张图片`)
+              return
+            }
+            setBrowserShotBusy(true)
+            void window.agentui
+              .browserScreenshot()
+              .then((shot) => {
+                const sizeBytes = Math.floor(shot.data.length * 0.75)
+                if (sizeBytes > MAX_IMAGE_BYTES) {
+                  setActionError('截图超过 10MB 限制，无法附加')
+                  return
+                }
+                setAttachedImages((prev) =>
+                  [
+                    ...prev,
+                    {
+                      id: `browser-shot-${Date.now()}`,
+                      type: 'image' as const,
+                      data: shot.data,
+                      mimeType: shot.mimeType,
+                      name: `browser-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.png`,
+                      sizeBytes,
+                    },
+                  ].slice(0, MAX_IMAGES_PER_PROMPT),
+                )
+                setShowBrowserPanel(false)
+                requestAnimationFrame(() => composerRef.current?.focus())
+              })
+              .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+              .finally(() => setBrowserShotBusy(false))
+          }}
+        />
+      )}
+
+      {trustProjectId && (() => {
+        const trustProject = projects.find((p) => p.id === trustProjectId)
+        if (!trustProject) return null
+        return (
+          <ProjectTrustModal
+            project={trustProject}
+            onClose={() => setTrustProjectId(null)}
+            onSave={(preset) => {
+              void window.agentui
+                .setProjectTrust(trustProject.id, preset)
+                .then((updated) => {
+                  setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
+                  setTrustProjectId(null)
+                })
+                .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+            }}
+          />
+        )
+      })()}
 
       {showForkModal && activeThread && (
         <ForkTreeModal

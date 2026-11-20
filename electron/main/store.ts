@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { PersistedState } from '@shared/types'
+import { HARNESS_IDS, type PersistedState } from '@shared/types'
+import { isTrustPreset } from '@shared/tool-policy'
 
 const DEFAULT_STATE: PersistedState = {
   projects: [],
@@ -24,12 +25,17 @@ export class StateStore {
       if (!existsSync(this.filePath)) return structuredClone(DEFAULT_STATE)
       const raw = JSON.parse(readFileSync(this.filePath, 'utf8')) as Partial<PersistedState>
       return {
-        projects: Array.isArray(raw.projects) ? raw.projects : [],
+        projects: Array.isArray(raw.projects)
+          ? raw.projects.map((p) => ({
+              ...p,
+              trustPreset: isTrustPreset(p.trustPreset) ? p.trustPreset : 'approval',
+            }))
+          : [],
         threads: Array.isArray(raw.threads)
           ? raw.threads.map((t) => ({ ...t, status: 'idle', lastError: null }))
           : [],
         customBinaryPaths: raw.customBinaryPaths && typeof raw.customBinaryPaths === 'object' ? raw.customBinaryPaths : {},
-        activeHarness: raw.activeHarness === 'omp' || raw.activeHarness === 'prime' ? raw.activeHarness : 'pi',
+        activeHarness: HARNESS_IDS.includes(raw.activeHarness as never) ? raw.activeHarness! : 'pi',
         activeProjectId: typeof raw.activeProjectId === 'string' ? raw.activeProjectId : null,
         activeThreadId: typeof raw.activeThreadId === 'string' ? raw.activeThreadId : null,
       }

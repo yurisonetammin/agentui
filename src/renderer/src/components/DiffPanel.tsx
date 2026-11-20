@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, GitBranch, MessageSquarePlus, Minus, Plus, RefreshCw, RotateCcw, Trash2, X } from 'lucide-react'
 import type { GitFileChange, GitStatusSummary } from '@shared/types'
+import { TerminalPanel } from './TerminalPanel'
+import { WorkspaceFilesPanel } from './WorkspaceFilesPanel'
+
+export type WorkspacePanelTab = 'changes' | 'worktrees' | 'files' | 'terminal'
 
 function DiffLines({ diffText }: { diffText: string }) {
   if (!diffText.trim()) {
@@ -44,17 +48,19 @@ export function DiffPanel({
   onCreateWorktreeThread,
   onNewThreadInWorktree,
   onRemoveWorktree,
+  onReferenceFile,
 }: {
   cwd: string
   repoRoot?: string
   status: GitStatusSummary | null
-  activeTab: 'changes' | 'worktrees'
-  onTabChange: (tab: 'changes' | 'worktrees') => void
+  activeTab: WorkspacePanelTab
+  onTabChange: (tab: WorkspacePanelTab) => void
   onRefresh: () => void
   onClose: () => void
   onCreateWorktreeThread: (branchName: string, baseRef?: string) => Promise<void>
   onNewThreadInWorktree: (worktreePath: string, branch: string | null) => Promise<void>
   onRemoveWorktree: (worktreePath: string) => Promise<void>
+  onReferenceFile?: (relPath: string) => void
 }) {
   const [selected, setSelected] = useState<GitFileChange | null>(null)
   const [diffText, setDiffText] = useState('')
@@ -146,6 +152,20 @@ export function DiffPanel({
           >
             Worktrees ({status?.worktrees.length ?? 0})
           </button>
+          <button
+            type="button"
+            className={`tab-btn ${activeTab === 'files' ? 'active' : ''}`}
+            onClick={() => onTabChange('files')}
+          >
+            文件
+          </button>
+          <button
+            type="button"
+            className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
+            onClick={() => onTabChange('terminal')}
+          >
+            终端
+          </button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           {status?.branch && (
@@ -165,9 +185,9 @@ export function DiffPanel({
 
       {error && <div className="msg-notice error" style={{ margin: '8px 10px 0' }}>{error}</div>}
 
-      {!status?.isRepo ? (
+      {(activeTab === 'changes' || activeTab === 'worktrees') && (!status?.isRepo ? (
         <div style={{ padding: 18, color: 'var(--text-muted)' }}>
-          当前目录不是 Git 仓库（{status?.error ?? cwd}）。
+          当前目录不是 Git 仓库（{status?.error ?? cwd}）。文件与终端标签页仍可正常使用。
         </div>
       ) : activeTab === 'changes' ? (
         <>
@@ -385,7 +405,15 @@ export function DiffPanel({
             })}
           </div>
         </div>
-      )}
+      ))}
+
+      {/* Keep files/terminal panels mounted so tree state and running commands survive tab switches */}
+      <div className="ws-panel-slot" style={{ display: activeTab === 'files' ? 'flex' : 'none' }}>
+        <WorkspaceFilesPanel cwd={cwd} onReferenceFile={onReferenceFile} />
+      </div>
+      <div className="ws-panel-slot" style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }}>
+        <TerminalPanel cwd={cwd} />
+      </div>
     </aside>
   )
 }

@@ -1,11 +1,22 @@
-export type HarnessId = 'pi' | 'omp' | 'prime'
+export type HarnessId = 'pi' | 'omp' | 'prime' | 'claude' | 'codex' | 'acp' | 'dsh'
 
-export const HARNESS_IDS: readonly HarnessId[] = ['pi', 'omp', 'prime']
+export const HARNESS_IDS: readonly HarnessId[] = ['pi', 'omp', 'prime', 'claude', 'codex', 'acp', 'dsh']
 
 export const HARNESS_LABELS: Record<HarnessId, string> = {
   pi: 'Pi',
   omp: 'OMP',
   prime: 'Prime Agent',
+  claude: 'Claude Code',
+  codex: 'Codex',
+  acp: 'ACP',
+  dsh: 'dsh',
+}
+
+/** Engines whose native wire protocol is bridged into the canonical Pi-style RPC event stream. */
+export const BRIDGED_HARNESS_IDS: readonly HarnessId[] = ['claude', 'codex', 'acp', 'dsh']
+
+export function isBridgedHarness(harness: HarnessId): boolean {
+  return BRIDGED_HARNESS_IDS.includes(harness)
 }
 
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -58,6 +69,8 @@ export interface ProjectEntry {
   path: string
   addedAt: number
   defaultHarness: HarnessId
+  /** Tool-permission preset for this project; defaults to 'approval'. */
+  trustPreset?: import('./tool-policy').TrustPreset
 }
 
 export type ThreadRunStatus =
@@ -110,6 +123,84 @@ export interface ImageAttachment {
 export interface WorkspaceFileEntry {
   path: string
   name: string
+}
+
+export interface WorkspaceDirEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+  sizeBytes?: number
+}
+
+export interface WorkspaceFileContent {
+  path: string
+  content: string
+  sizeBytes: number
+  truncated: boolean
+  binary: boolean
+  language?: string
+}
+
+export interface TerminalOutputEvent {
+  runId: string
+  stream: 'stdout' | 'stderr' | 'system'
+  text: string
+}
+
+export interface TerminalExitEvent {
+  runId: string
+  code: number | null
+  signal: string | null
+  timedOut: boolean
+}
+
+export interface BrowserEgoStatus {
+  available: boolean
+  path: string | null
+  version: string | null
+  error?: string
+}
+
+export interface BrowserMcpServer {
+  name: string
+  /** Config file the server was discovered in. */
+  source: string
+  command?: string
+  args?: string[]
+  url?: string
+  browserLike: boolean
+}
+
+export interface BrowserStatus {
+  ego: BrowserEgoStatus
+  mcpServers: BrowserMcpServer[]
+  fetchedAt: number
+}
+
+export interface BrowserSpaceInfo {
+  id: number
+  name: string
+  ownership?: string
+}
+
+export interface BrowserTabInfo {
+  label?: string
+  title: string
+  url: string
+  active: boolean
+}
+
+export interface BrowserOpenResult {
+  url: string
+  title: string
+  spaceId: number | null
+}
+
+export interface BrowserScreenshotResult {
+  data: string
+  mimeType: string
+  url: string
+  title: string
 }
 
 export interface SlashCommandDescriptor {
@@ -219,6 +310,9 @@ export interface ExtensionUiRequest {
   placeholder?: string
   prefill?: string
   timeout?: number
+  /** Risk assessment attached by the project trust policy (confirm/select only). */
+  risk?: { level: import('./tool-policy').ToolRiskLevel; reasons: string[] }
+  policyPreset?: import('./tool-policy').TrustPreset
 }
 
 export interface ExtensionUiResponse {
@@ -326,6 +420,7 @@ export interface AgentUiApi {
   addProject(dirPath: string): Promise<ProjectEntry>
   removeProject(projectId: string): Promise<void>
   setActiveProject(projectId: string | null): Promise<void>
+  setProjectTrust(projectId: string, preset: import('./tool-policy').TrustPreset): Promise<ProjectEntry>
   createThread(input: CreateThreadInput): Promise<ThreadEntry>
   deleteThread(threadId: string): Promise<void>
   setActiveThread(threadId: string | null): Promise<void>
@@ -340,6 +435,17 @@ export interface AgentUiApi {
   compactThread(threadId: string): Promise<void>
   respondExtensionUi(threadId: string, response: ExtensionUiResponse): Promise<void>
   listWorkspaceFiles(cwd: string, query?: string): Promise<WorkspaceFileEntry[]>
+  listWorkspaceDir(cwd: string, relPath?: string): Promise<WorkspaceDirEntry[]>
+  readWorkspaceFile(cwd: string, relPath: string): Promise<WorkspaceFileContent>
+  terminalStart(cwd: string, command: string): Promise<string>
+  terminalStop(runId: string): Promise<void>
+  onTerminalOutput(cb: (event: TerminalOutputEvent) => void): () => void
+  onTerminalExit(cb: (event: TerminalExitEvent) => void): () => void
+  browserStatus(refresh?: boolean): Promise<BrowserStatus>
+  browserSpaces(): Promise<BrowserSpaceInfo[]>
+  browserTabs(): Promise<BrowserTabInfo[]>
+  browserOpen(url: string): Promise<BrowserOpenResult>
+  browserScreenshot(): Promise<BrowserScreenshotResult>
   getThreadCommands(threadId: string): Promise<SlashCommandDescriptor[]>
   getThreadForkTree(threadId: string): Promise<SessionTreeSnapshot>
   forkThread(input: ForkThreadInput): Promise<ForkThreadResult>

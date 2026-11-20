@@ -4,6 +4,7 @@ import type { ContextUsageInfo, ExtensionUiRequest, ExtensionUiResponse, Thinkin
 import { killProcessTree, prepareExecutableSpawn, safeChildEnvironment } from '../process-utils'
 import type { HarnessRpcAdapter } from './adapters'
 import { parseContextUsage } from './adapters'
+import type { BridgeContext, BridgeStartInfo, ProtocolBridge } from './bridge'
 import { RpcChunkAssembler, type RpcObject } from './chunk-assembly'
 import { StrictJsonlDecoder } from './jsonl'
 
@@ -58,6 +59,8 @@ export class RpcRuntime {
   private isCompacting = false
   private statsInFlight = false
   private statsQueued = false
+  private readonly bridge: ProtocolBridge | null = null
+  private readonly bridgeCtx: BridgeContext | null = null
 
   constructor(
     readonly threadId: string,
@@ -67,7 +70,36 @@ export class RpcRuntime {
     readonly adapter: HarnessRpcAdapter,
     private readonly callbacks: RpcRuntimeCallbacks,
     childEnv: NodeJS.ProcessEnv = safeChildEnvironment(),
+    bridgeInfo?: BridgeStartInfo,
   ) {
+    if (adapter.createBridge && bridgeInfo) {
+      this.bridge = adapter.createBridge(bridgeInfo)
+      this.bridgeCtx = {
+        cwd,
+        sessionPath: bridgeInfo.sessionPath ?? null,
+        providerId: bridgeInfo.providerId ?? null,
+        modelId: bridgeInfo.modelId ?? null,
+        thinkingLevel: bridgeInfo.thinkingLevel ?? 'medium',
+        writeLine: (line) => this.writeLine(line),
+        respond: (id, data, error) => {
+          const entry = this.pending.get(id)
+          if (!entry) return
+          this.pending.delete(id)
+          clearTimeout(entry.timer)
+          if (error !== undefined) {
+            entry.reject(new Error(error))
+          } else {
+            entry.resolve({ type: 'response', id, command: entry.command, success: true, data: data ?? undefined })
+          }
+        },
+        emit: (event) => this.dispatchNormalizedEvent(event),
+        state: (patch) => {
+          if (patch.isStreaming !== undefined) this.isStreaming = patch.isStreaming
+          if (patch.isCompacting !== undefined) this.isCompacting = patch.isCompacting
+          this.callbacks.onStateChange(patch)
+        },
+      }
+    }
     this.chunks = new RpcChunkAssembler({
       agentName: adapter.agentName,
       deliver: (frame) => this.handleFrame(frame),
@@ -117,6 +149,7 @@ export class RpcRuntime {
     })
 
     this.child.once('error', (err) => {
+      this.bridge?.dispose?.(err)
       this.failAllPending(err)
       this.callbacks.onEvent({ type: 'transport_error', error: err.message })
     })
@@ -141,6 +174,7 @@ export class RpcRuntime {
         ? `${this.adapter.agentName} exited (${code ?? signal}): ${stderrSummary}`
         : `${this.adapter.agentName} process exited (${code ?? signal ?? 'closed'})`
       this.failAllPending(new Error(errMsg))
+      this.bridge?.dispose?.(new Error(errMsg))
       this.callbacks.onEvent({ type: 'runtime_exit', code, signal, unexpected, wasStreaming, reason })
       this.callbacks.onExit({ code, signal, stderrTail: this.stderrTail, unexpected, wasStreaming, reason })
     })
@@ -159,6 +193,12 @@ export class RpcRuntime {
   }
 
   async handshake(): Promise<void> {
+    if (this.bridge && this.bridgeCtx) {
+      await this.bridge.initialize(this.bridgeCtx)
+      await this.refreshState().catch(() => undefined)
+      await this.refreshSessionStats().catch(() => undefined)
+      return
+    }
     if (this.adapter.negotiateProtocolVersion !== undefined) {
       await this.request(
         { type: 'negotiate_protocol', protocolVersion: this.adapter.negotiateProtocolVersion },
@@ -215,7 +255,12 @@ export class RpcRuntime {
   async sendCommand(rawCommand: RpcObject, timeoutMs = 60_000): Promise<RpcObject> {
     const command = this.adapter.translateCommand(rawCommand)
     if (command.type === 'extension_ui_response') {
-      await this.writeLine(`${JSON.stringify(command)}\n`)
+      if (this.bridge && this.bridgeCtx) {
+        const { type: _type, ...response } = command
+        this.bridge.handleUiResponse(response as unknown as ExtensionUiResponse, this.bridgeCtx)
+      } else {
+        await this.writeLine(`${JSON.stringify(command)}\n`)
+      }
       return { type: 'response', command: 'extension_ui_response', success: true }
     }
     const response = await this.request(command, timeoutMs)
@@ -233,6 +278,10 @@ export class RpcRuntime {
   }
 
   async respondExtensionUi(response: ExtensionUiResponse): Promise<void> {
+    if (this.bridge && this.bridgeCtx) {
+      this.bridge.handleUiResponse(response, this.bridgeCtx)
+      return
+    }
     await this.writeLine(`${JSON.stringify({ type: 'extension_ui_response', ...response })}\n`)
   }
 
@@ -258,6 +307,7 @@ export class RpcRuntime {
       }
     }
     this.failAllPending(new Error('Runtime stopped'))
+    this.bridge?.dispose?.(new Error('Runtime stopped'))
   }
 
   private waitForClose(timeoutMs: number): Promise<boolean> {
@@ -315,7 +365,10 @@ export class RpcRuntime {
         timer,
       })
 
-      void this.writeLine(line).catch((err) => {
+      const dispatch = this.bridge && this.bridgeCtx
+        ? Promise.resolve(this.bridge.encodeCommand({ ...command, id }, this.bridgeCtx))
+        : this.writeLine(line)
+      void dispatch.catch((err) => {
         const entry = this.pending.get(id)
         if (!entry) return
         this.pending.delete(id)
@@ -348,8 +401,15 @@ export class RpcRuntime {
   }
 
   private handleFrame(raw: unknown): void {
-    if (!isRecord(raw) || typeof raw.type !== 'string') return
+    if (!isRecord(raw)) return
     this.receivedFrame = true
+
+    if (this.bridge && this.bridgeCtx) {
+      this.bridge.handleFrame(raw, this.bridgeCtx)
+      return
+    }
+
+    if (typeof raw.type !== 'string') return
 
     if (raw.type === 'response' && typeof raw.id === 'string') {
       const entry = this.pending.get(raw.id)

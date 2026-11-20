@@ -8,16 +8,21 @@ import {
   type ExtensionUiResponse,
   type ForkThreadInput,
   type HarnessId,
+  type ProjectEntry,
   type SendPromptInput,
   type ThinkingLevel,
   type ThreadEntry,
 } from '@shared/types'
+import { isTrustPreset } from '@shared/tool-policy'
 import type { HarnessDiscoveryService } from './discovery'
+import type { BrowserCompanionService } from './browser-companion'
 import type { GitService } from './git/git-service'
 import type { ModelCatalogService } from './model-catalog'
 import type { RuntimeManager } from './rpc/manager'
 import { scanCliSessions } from './sessions/catalog'
 import type { StateStore } from './store'
+import type { TerminalService } from './terminal-service'
+import type { WorkspaceBrowserService } from './workspace-browser'
 import type { WorkspaceFileService } from './workspace-files'
 
 export function registerIpcHandlers(deps: {
@@ -27,9 +32,12 @@ export function registerIpcHandlers(deps: {
   models: ModelCatalogService
   git: GitService
   workspaceFiles: WorkspaceFileService
+  workspaceBrowser: WorkspaceBrowserService
+  browserCompanion: BrowserCompanionService
+  terminal: TerminalService
   runtimeManager: RuntimeManager
 }): void {
-  const { getWindow, store, discovery, models, git, workspaceFiles, runtimeManager } = deps
+  const { getWindow, store, discovery, models, git, workspaceFiles, workspaceBrowser, browserCompanion, terminal, runtimeManager } = deps
 
   ipcMain.handle('app:getState', () => store.snapshot())
 
@@ -86,6 +94,7 @@ export function registerIpcHandlers(deps: {
       path: abs,
       addedAt: Date.now(),
       defaultHarness: store.snapshot().activeHarness,
+      trustPreset: 'approval' as const,
     }
     store.mutate((draft) => {
       draft.projects.push(project)
@@ -113,6 +122,20 @@ export function registerIpcHandlers(deps: {
     store.mutate((draft) => {
       draft.activeProjectId = projectId
     })
+  })
+
+  ipcMain.handle('projects:setTrust', (_e, projectId: string, preset: string) => {
+    if (!isTrustPreset(preset)) throw new Error(`无效的权限预设: ${preset}`)
+    let updated: ProjectEntry | undefined
+    store.mutate((draft) => {
+      const target = draft.projects.find((p) => p.id === projectId)
+      if (target) {
+        target.trustPreset = preset
+        updated = structuredClone(target)
+      }
+    })
+    if (!updated) throw new Error('项目不存在')
+    return updated
   })
 
   ipcMain.handle('threads:create', (_e, input: CreateThreadInput) => {
@@ -227,6 +250,28 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle('workspace:listFiles', (_e, cwd: string, query?: string) => {
     return workspaceFiles.listFiles(cwd, query ?? '')
   })
+
+  ipcMain.handle('workspace:listDir', (_e, cwd: string, relPath?: string) => {
+    return workspaceBrowser.listDir(cwd, relPath ?? '')
+  })
+
+  ipcMain.handle('workspace:readFile', (_e, cwd: string, relPath: string) => {
+    return workspaceBrowser.readFile(cwd, relPath)
+  })
+
+  ipcMain.handle('terminal:start', (_e, cwd: string, command: string) => {
+    return terminal.start(cwd, command)
+  })
+
+  ipcMain.handle('terminal:stop', (_e, runId: string) => {
+    return terminal.stop(runId)
+  })
+
+  ipcMain.handle('browser:status', (_e, refresh?: boolean) => browserCompanion.getStatus(refresh === true))
+  ipcMain.handle('browser:spaces', () => browserCompanion.listSpaces())
+  ipcMain.handle('browser:tabs', () => browserCompanion.listTabs())
+  ipcMain.handle('browser:open', (_e, url: string) => browserCompanion.openUrl(url))
+  ipcMain.handle('browser:screenshot', () => browserCompanion.screenshot())
 
   ipcMain.handle('threads:getCommands', (_e, threadId: string) => {
     return runtimeManager.getSlashCommands(threadId)

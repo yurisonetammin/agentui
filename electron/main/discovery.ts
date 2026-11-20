@@ -17,9 +17,12 @@ export function parseHarnessVersion(rawOutput: string): string | null {
   const line = lines[lines.length - 1]
   if (!line) return null
   const tokens = line.split(/\s+/)
-  const last = tokens[tokens.length - 1] ?? ''
-  const stripped = last.replace(/^[a-z0-9_-]+\//i, '').replace(/^v/i, '')
-  return /^\d/.test(stripped) ? stripped : null
+  // Scan from the end so suffixes like "2.1.325 (Claude Code)" still resolve.
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const stripped = (tokens[i] ?? '').replace(/^[a-z0-9_-]+\//i, '').replace(/^v/i, '')
+    if (/^\d/.test(stripped)) return stripped
+  }
+  return null
 }
 
 function classifyPrimeFromVersion(version: string | null): PrimeImplementation | undefined {
@@ -50,11 +53,9 @@ async function probePrimeImplementation(executable: string): Promise<PrimeImplem
 }
 
 export class HarnessDiscoveryService {
-  private statuses: Record<HarnessId, HarnessStatus> = {
-    pi: this.emptyStatus('pi'),
-    omp: this.emptyStatus('omp'),
-    prime: this.emptyStatus('prime'),
-  }
+  private statuses: Record<HarnessId, HarnessStatus> = Object.fromEntries(
+    HARNESS_IDS.map((id) => [id, this.emptyStatus(id)]),
+  ) as Record<HarnessId, HarnessStatus>
 
   private emptyStatus(id: HarnessId): HarnessStatus {
     const d = HARNESS_DESCRIPTORS[id]
@@ -180,11 +181,7 @@ export class HarnessDiscoveryService {
       }),
     )
 
-    this.statuses = {
-      pi: entries[0][1],
-      omp: entries[1][1],
-      prime: entries[2][1],
-    }
+    this.statuses = Object.fromEntries(entries) as Record<HarnessId, HarnessStatus>
     return this.snapshot()
   }
 }

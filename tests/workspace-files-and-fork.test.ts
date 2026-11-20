@@ -7,14 +7,15 @@ import { RuntimeManager } from '../electron/main/rpc/manager'
 import { createForkedSessionFile, readSessionForkTree, readSessionTimeline } from '../electron/main/sessions/catalog'
 import { StateStore } from '../electron/main/store'
 import { WorkspaceFileService } from '../electron/main/workspace-files'
-import type { HarnessId, HarnessStatus } from '../src/shared/types'
+import { HARNESS_IDS, HARNESS_LABELS, type HarnessId, type HarnessStatus } from '../src/shared/types'
 
 function makeStatuses(): Record<HarnessId, HarnessStatus> {
-  return {
-    pi: { id: 'pi', name: 'Pi', path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
-    omp: { id: 'omp', name: 'OMP', path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
-    prime: { id: 'prime', name: 'Prime Agent', path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
-  }
+  return Object.fromEntries(
+    HARNESS_IDS.map((id) => [
+      id,
+      { id, name: HARNESS_LABELS[id], path: null, version: null, ready: false, agentDir: '', sessionRoot: '' },
+    ]),
+  ) as Record<HarnessId, HarnessStatus>
 }
 
 describe('WorkspaceFileService & Session Fork Tree', () => {

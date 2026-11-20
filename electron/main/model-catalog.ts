@@ -10,6 +10,37 @@ import {
   runProcess,
 } from './process-utils'
 import { StrictJsonlDecoder } from './rpc/jsonl'
+import { JsonRpcPeer } from './rpc/bridge'
+
+const CLAUDE_STATIC_MODELS: ModelDescriptor[] = [
+  {
+    provider: 'anthropic',
+    id: 'sonnet',
+    name: 'Claude Sonnet (最新)',
+    reasoning: true,
+    contextWindow: 200_000,
+    availableThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    fastModeSupported: false,
+  },
+  {
+    provider: 'anthropic',
+    id: 'opus',
+    name: 'Claude Opus (最新)',
+    reasoning: true,
+    contextWindow: 200_000,
+    availableThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    fastModeSupported: false,
+  },
+  {
+    provider: 'anthropic',
+    id: 'haiku',
+    name: 'Claude Haiku (最新)',
+    reasoning: false,
+    contextWindow: 200_000,
+    availableThinkingLevels: ['off'],
+    fastModeSupported: false,
+  },
+]
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -84,20 +115,31 @@ export class ModelCatalogService {
     )
 
     try {
-      const models =
-        harness === 'omp'
-          ? await this.fetchOmpModels(executable, childEnv)
-          : await this.fetchRpcModels(
-              executable,
-              harness === 'pi' ? ['--mode', 'rpc', '--no-session', '--offline'] : ['--mode', 'rpc', '--no-session'],
-              childEnv,
-              harness === 'prime' ? 25_000 : 12_000,
-            )
+      let models: ModelDescriptor[]
+      let warning: string | undefined
+      if (harness === 'claude') {
+        models = CLAUDE_STATIC_MODELS
+        warning = 'Claude Code 模型列表为内置别名（实际可用性取决于账号订阅与 API Key）'
+      } else if (harness === 'codex') {
+        models = await this.fetchCodexModels(executable, childEnv)
+      } else if (harness === 'acp' || harness === 'dsh') {
+        models = []
+        warning = '模型由 Agent 端自行管理；如 Agent 声明模型列表，可在会话中切换'
+      } else if (harness === 'omp') {
+        models = await this.fetchOmpModels(executable, childEnv)
+      } else {
+        models = await this.fetchRpcModels(
+          executable,
+          harness === 'pi' ? ['--mode', 'rpc', '--no-session', '--offline'] : ['--mode', 'rpc', '--no-session'],
+          childEnv,
+          harness === 'prime' ? 25_000 : 12_000,
+        )
+      }
       const result: ModelCatalogResult = {
         harness,
         models,
         fetchedAt: Date.now(),
-        warning: models.length === 0 ? `未检测到已配置凭证的模型（请先在终端用 ${harness} 登录或配置 API Key）` : undefined,
+        warning: warning ?? (models.length === 0 ? `未检测到已配置凭证的模型（请先在终端用 ${harness} 登录或配置 API Key）` : undefined),
       }
       this.cache.set(harness, result)
       return result
@@ -134,6 +176,96 @@ export class ModelCatalogService {
         ? parsed.models
         : []
     return list.map(normalizeModelEntry).filter((m): m is ModelDescriptor => m !== null)
+  }
+
+  private fetchCodexModels(executable: string, childEnv: NodeJS.ProcessEnv): Promise<ModelDescriptor[]> {
+    const invocation = prepareExecutableSpawn(executable, ['app-server'], childEnv)
+    return new Promise((resolvePromise, rejectPromise) => {
+      const child = spawn(invocation.file, invocation.args, {
+        env: invocation.env,
+        shell: false,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+
+      let settled = false
+      let stderr = ''
+      const peer = new JsonRpcPeer((message) =>
+        new Promise<void>((resolveWrite, rejectWrite) => {
+          child.stdin.write(`${JSON.stringify(message)}\n`, (err) => (err ? rejectWrite(err) : resolveWrite()))
+        }),
+      )
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try { child.stdin.end() } catch { /* ignore */ }
+        if (child.pid) void killProcessTree(child.pid)
+        fn()
+      }
+
+      const timer = setTimeout(() => {
+        finish(() => rejectPromise(new Error('Codex app-server 模型探测超时')))
+      }, 20_000)
+      timer.unref()
+
+      const decoder = new StrictJsonlDecoder((line) => {
+        try {
+          const frame = JSON.parse(line) as unknown
+          if (!isRecord(frame)) return
+          peer.handleResponse(frame)
+        } catch {
+          // ignore non-json noise
+        }
+      })
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        try {
+          decoder.push(chunk)
+        } catch (err) {
+          finish(() => rejectPromise(err instanceof Error ? err : new Error(String(err))))
+        }
+      })
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8')
+        if (stderr.length > 2048) stderr = stderr.slice(-2048)
+      })
+      child.once('error', (err) => finish(() => rejectPromise(err)))
+      child.once('close', (code) => {
+        finish(() => rejectPromise(new Error(`Codex 探测进程提前退出 (${code}): ${stderr.trim()}`)))
+      })
+
+      void (async () => {
+        try {
+          await peer.request('initialize', {
+            clientInfo: { name: 'agentui', title: 'AgentUI', version: '0.1.0' },
+          }, 15_000)
+          await peer.notify('initialized', {})
+          const res = await peer.request('model/list', { limit: 50 }, 15_000)
+          const list = Array.isArray(res.items) ? res.items : Array.isArray(res.models) ? res.models : []
+          const models: ModelDescriptor[] = []
+          for (const raw of list) {
+            if (!isRecord(raw)) continue
+            const id = typeof raw.model === 'string' ? raw.model : typeof raw.id === 'string' ? raw.id : ''
+            if (!id) continue
+            const efforts = Array.isArray(raw.supportedReasoningEfforts) ? raw.supportedReasoningEfforts : []
+            const reasoning = efforts.length > 0 || raw.supportsReasoning === true
+            models.push({
+              provider: 'openai',
+              id,
+              name: typeof raw.displayName === 'string' && raw.displayName ? raw.displayName : id,
+              reasoning,
+              contextWindow: typeof raw.contextWindow === 'number' && raw.contextWindow > 0 ? raw.contextWindow : 272_000,
+              availableThinkingLevels: reasoning ? ['off', 'minimal', 'low', 'medium', 'high'] : ['off'],
+              fastModeSupported: false,
+            })
+          }
+          finish(() => resolvePromise(models))
+        } catch (err) {
+          finish(() => rejectPromise(err instanceof Error ? err : new Error(String(err))))
+        }
+      })()
+    })
   }
 
   private fetchRpcModels(

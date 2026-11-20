@@ -1,6 +1,18 @@
 import { useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
+import {
+  CAPABILITY_LABELS,
+  CAPABILITY_NOTES,
+  HARNESS_CAPABILITIES,
+  type CapabilitySupport,
+} from '@shared/capabilities'
 import { HARNESS_IDS, HARNESS_LABELS, type HarnessId, type HarnessStatus } from '@shared/types'
+
+function CapabilityMark({ support }: { support: CapabilitySupport }) {
+  if (support === 'yes') return <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓</span>
+  if (support === 'partial') return <span style={{ color: 'var(--warning)', fontWeight: 700 }} title="部分支持 / 有限制">◐</span>
+  return <span style={{ color: 'var(--text-muted)' }}>—</span>
+}
 
 export function SettingsModal({
   harnesses,
@@ -20,7 +32,7 @@ export function SettingsModal({
 
   return (
     <div className="modal-backdrop">
-      <div className="modal-card">
+      <div className="modal-card modal-card-wide">
         <div className="modal-header">
           <h3>CLI 引擎探测与自定义路径</h3>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -94,6 +106,57 @@ export function SettingsModal({
             </div>
           )
         })}
+
+        <div
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            border: '1px solid var(--border)',
+            background: 'var(--bg-root)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          <div style={{ fontWeight: 600, fontSize: 13 }}>引擎能力矩阵</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            ✓ 完整支持 · ◐ 部分支持 / 有限制 · — 不支持。桥接引擎（Claude Code / Codex / ACP / dsh）通过统一传输层转译为内部协议。
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="capability-matrix">
+              <thead>
+                <tr>
+                  <th>能力</th>
+                  {HARNESS_IDS.map((id) => (
+                    <th key={id} title={HARNESS_LABELS[id]}>
+                      {HARNESS_LABELS[id]}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {CAPABILITY_LABELS.map(({ key, label }) => (
+                  <tr key={key}>
+                    <td>{label}</td>
+                    {HARNESS_IDS.map((id) => (
+                      <td key={id} style={{ textAlign: 'center' }}>
+                        <CapabilityMark support={HARNESS_CAPABILITIES[id][key]} />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {HARNESS_IDS.filter((id) => CAPABILITY_NOTES[id]).map((id) => (
+              <div key={id} style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                <strong>{HARNESS_LABELS[id]}：</strong>
+                {CAPABILITY_NOTES[id]}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )

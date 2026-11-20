@@ -4,7 +4,7 @@
 
 ---
 
-## Phase 1 — MVP 最小可用闭环（当前阶段）
+## Phase 1 — MVP 最小可用闭环（已完成）
 
 目标：跑通「三引擎自动探测与并发切换 + 流式对话 / Thinking / Tool Call / 审批弹窗 + Git Worktree 与 Diff 审阅」。
 
@@ -30,30 +30,42 @@
 
 ---
 
-## Phase 2 — 多协议扩展与高效工作区
+## Phase 2 — 多协议扩展与高效工作区（已完成，2026-11-20）
 
 目标：补齐 Codex / Claude / ACP / DSH 生态接入，提升长任务会话管理与编辑器协同体验。
 
 1. **通用 Harness / 协议扩展层**：
-   - 抽象传输接口，在现有 Pi/OMP/Prime RPC 之外新增 **ACP (`Agent Client Protocol`)**、**Claude Code (`stream-json`)**、**Codex App Server** 与 **`dsh`** 引擎接入。
-   - 在 `SettingsModal` 展示引擎能力矩阵（是否支持 steer、worktree/extension UI、context stats、fork）。
+   - [x] 抽象传输接口 `ProtocolBridge`（[electron/main/rpc/bridge.ts](../electron/main/rpc/bridge.ts)），在现有 Pi/OMP/Prime RPC 之外新增 **ACP (`Agent Client Protocol`)**、**Claude Code (`stream-json`)**、**Codex App Server** 与 **`dsh --profile acp`** 引擎接入；`RpcRuntime` / `RuntimeManager` / 事件归约 / UI 保持引擎无关。
+   - [x] 在 `SettingsModal` 展示 7 引擎 × 11 项能力矩阵（steer、follow-up、compact、thinking、模型热切换、fork、审批弹窗、context stats、历史回放、图片、斜杠命令）及桥接引擎限制说明。
+   - [x] Claude Code 历史会话回放（内容嗅探区分 Pi/Claude `.jsonl`，uuid/parentUuid 活跃链重建）；Codex/ACP/dsh 会话由 Agent 端管理，分叉与文件级回放给出友好降级提示。
+   - 验证状态：Claude Code 2.1.325 本机真实 CLI 握手 + 实窗冒烟通过；**Codex / ACP / dsh 适配器按公开协议实现，本机未安装对应 CLI，尚未端到端验证（实验性）**。
 2. **会话分支与历史增强**：
    - [x] 利用 Pi `fork` / OMP `branch` 协议与 `.jsonl` 活跃分支树构建「分叉节点树 + 多方案并行对比」面板，支持从任意历史提问跨引擎分叉并保留原对话。
    - [ ] 本地会话索引与全文检索（在无 MSVC 时可选 WASM SQLite，或仅保留增量 JSONL 索引）。
 3. **高效输入与文件关联**：
    - [x] Composer 支持 `@file` 工作区文件模糊补全、`/` 斜杠命令提示（内置命令 + 引擎 `get_commands` Skill/模板）与剪贴板图片粘贴/拖拽上传。
-   - [ ] 右侧面板增加「文件树 + 只读代码高亮」及可选内嵌终端。
-   - [ ] 使用 `@tanstack/react-virtual` 优化超长 Tool 输出与千条级时间线渲染性能。
+   - [x] 右侧面板增加「文件树 + 只读代码高亮」（`Ctrl+Shift+E`，highlight.js 高亮、512KB 截断、二进制检测、路径越界防护、`@引用` 回注输入框）及可选内嵌终端（`Ctrl+Shift+T`）。
+   - [x] 使用 `@tanstack/react-virtual` 优化超长 Tool 输出（>400 行按行虚拟滚动）与千条级时间线（动态测高虚拟滚动 + 贴底跟随）渲染性能。
+
+### 内嵌终端的技术取舍与 PTY 升级路径
+
+- 受「零 C++ 原生模块」铁律约束（目标机无 MSVC/Rust 工具链），当前终端为**非 PTY 命令运行器**：每条命令经显式 shell 进程执行（Windows `cmd.exe /d /s /c`，POSIX `/bin/sh -c`），Node `spawn` 本身保持 `shell: false`；支持并发上限 4、10 分钟超时自动终止、进程树强杀、输出缓冲节流渲染。交互式 TTY 程序（vim、top 等）不在当前能力范围内，UI 已明示。
+- 升级路径：待确认编译工具链或 prebuild 可用性后，引入 `@lydell/node-pty`（预编译二进制分发）或 `node-pty-prebuilt-multiarch`，替换 `TerminalService` 的 spawn 层并接入 xterm.js；IPC 契约（`terminal:start/stop` + 输出/退出事件）可保持不变。
 
 ---
 
 ## Phase 3 — 安全治理、浏览器协同与桌面分发
 
-1. **工具权限与项目信任策略引擎**：
-   - 可配置每个项目的权限预设（只读观察 / 常规读写需审批 / 全自动沙盒）。
-   - 对敏感 Bash / 删改命令或 Prime 非交互路径增加策略提示与工作区白名单。
-2. **`ego-browser` / 浏览器与 MCP 协同面板**：
-   - 为浏览器型 MCP 或本地 `ego-browser` 调试会话增加状态徽标与一键唤醒/截屏回贴入口。
+1. **工具权限与项目信任策略引擎**（已完成，2026-11-21）：
+   - [x] 按项目配置权限预设：**只读观察 / 写操作需审批（默认）/ 自动模式**（[src/shared/tool-policy.ts](../src/shared/tool-policy.ts) 纯函数策略模块 + 侧栏盾牌按钮 `ProjectTrustModal`，`projects:setTrust` IPC 持久化）。
+   - [x] 高风险命令拦截：约 21 条规则（`rm -rf`、`del /f /s /q`、`Remove-Item -Recurse -Force`、格式化/`diskpart`/`mkfs`/`dd of=/dev/`、关机重启、`reg delete`、`git push --force` / `reset --hard` / `clean -f`、`curl | sh` / `iwr | iex`、`chmod 777 /`、删库 SQL、fork 炸弹、`find -delete` 等），审批弹窗红色警告横幅列出命中原因；**自动模式下高风险操作仍强制人工确认**。
+   - [x] 策略在 `RuntimeManager` 的审批边界（`extension_ui_request` confirm/select）统一拦截：只读预设自动放行只读命令/读取类工具并自动拒绝写操作（时间线留痕提示）；自动预设放行常规操作；input/editor 始终交由用户。select 型审批自动匹配允许/拒绝选项（中英文），无法匹配拒绝项时取消请求；自动应答失败时降级为人工弹窗。
+   - 已知边界：策略是**审批层尽力而为**——引擎自身配置为静默自动执行、不发起审批请求时无法在此拦截（UI 与文档已明示）；工作区白名单未实现（后续可选）。
+2. **`ego-browser` / 浏览器与 MCP 协同面板**（已完成，2026-11-21）：
+   - [x] [electron/main/browser-companion.ts](../electron/main/browser-companion.ts)：ego-browser CLI 探测（PATH + `~/.local/share/ego/active_version_dir`，`--version` 缓存 60s）；只读扫描 `~/.claude.json`（含 per-project）、项目 `.mcp.json`、`~/.codex/config.toml`（`[mcp_servers.*]`）、`~/.gemini/settings.json` 并按名称/命令/URL 分类浏览器型 MCP。
+   - [x] 顶栏「浏览器」面板：ego 状态徽标、浏览器型 MCP 列表（仅状态展示，由各引擎自行连接）、快捷控制——在专属 `agentui-workbench` 空间打开 http(s) URL、列出标签页、**截图一键回贴输入框**（遵守 4 张 / 10MB 图片上限）。
+   - [x] 脚本经临时 `.mjs` 文件 + `ego-browser nodejs -e "await import(...)"` 执行（`shell: false`、超时进程树强杀、串行队列、URL `JSON.stringify` 注入且仅允许 http(s)）；已处理 ego-browser（Chromium 系）管道模式下 console 输出走 **stderr** 的差异。
+   - 验证状态：本机 ego-browser 0.6.3.14 真实打开 example.com → 标签页 → PNG 截图端到端通过（测试后空间已清理）。
 3. **自动化测试与安装包分发**：
    - 引入基于 Playwright (`_electron.launch`) 的真实端到端回归套件。
    - 配置 `electron-builder` 生成 Windows NSIS 安装包 / 绿色便携包及版本号注入脚本。

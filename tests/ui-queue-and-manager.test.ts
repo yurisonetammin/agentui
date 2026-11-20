@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { HarnessDiscoveryService } from '../electron/main/discovery'
 import { RuntimeManager } from '../electron/main/rpc/manager'
 import { StateStore } from '../electron/main/store'
-import type { ExtensionUiRequest, HarnessId, HarnessStatus, ThreadStatusUpdate } from '../src/shared/types'
+import { HARNESS_IDS, HARNESS_LABELS, type ExtensionUiRequest, type HarnessId, type HarnessStatus, type ThreadStatusUpdate } from '../src/shared/types'
 import { dequeueUiRequest, enqueueUiRequest, pruneUiRequestsForThread } from '../src/shared/ui-queue'
 
 function makeUiReq(id: string, threadId: string, title = 'Confirm'): ExtensionUiRequest {
@@ -18,11 +18,12 @@ function makeUiReq(id: string, threadId: string, title = 'Confirm'): ExtensionUi
 }
 
 function makeStatuses(overrides: Partial<Record<HarnessId, Partial<HarnessStatus>>> = {}): Record<HarnessId, HarnessStatus> {
-  return {
-    pi: { id: 'pi', name: 'Pi', path: null, version: null, ready: false, error: 'Pi 未就绪', agentDir: '', sessionRoot: '', ...overrides.pi },
-    omp: { id: 'omp', name: 'OMP', path: null, version: null, ready: false, error: 'OMP 未就绪', agentDir: '', sessionRoot: '', ...overrides.omp },
-    prime: { id: 'prime', name: 'Prime Agent', path: null, version: null, ready: false, error: 'Prime Agent 未就绪', agentDir: '', sessionRoot: '', ...overrides.prime },
-  }
+  return Object.fromEntries(
+    HARNESS_IDS.map((id) => [
+      id,
+      { id, name: HARNESS_LABELS[id], path: null, version: null, ready: false, error: `${HARNESS_LABELS[id]} 未就绪`, agentDir: '', sessionRoot: '', ...overrides[id] },
+    ]),
+  ) as Record<HarnessId, HarnessStatus>
 }
 
 describe('Extension UI queue & RuntimeManager', () => {

@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { BUILTIN_SLASH_COMMANDS } from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
 import {
+  assessToolRequest,
+  decideApproval,
+  pickSelectOption,
+  TRUST_PRESET_LABELS,
+  type TrustPreset,
+} from '@shared/tool-policy'
+import {
   HARNESS_LABELS,
   type ExtensionUiRequest,
   type ExtensionUiResponse,
@@ -23,6 +30,7 @@ import { harnessChildEnvironment } from '../process-utils'
 import { createForkedSessionFile, readSessionForkTree, readSessionTimeline } from '../sessions/catalog'
 import type { StateStore } from '../store'
 import { selectHarnessRpcAdapter } from './adapters'
+import { CLAUDE_THINKING_TOKENS } from './bridges/claude'
 import { RpcRuntime } from './runtime'
 
 export interface ManagerListeners {
@@ -398,6 +406,81 @@ export class RuntimeManager {
     return thread
   }
 
+  /**
+   * Project trust-policy interception for engine approval prompts.
+   * Only confirm/select requests are subject to the policy; input/editor always
+   * reach the user. Note: engines that auto-execute tools without emitting an
+   * approval request cannot be intercepted here (documented limitation).
+   */
+  private handleExtensionUiRequest(threadId: string, runtime: RpcRuntime, req: ExtensionUiRequest): void {
+    const state = this.store.snapshot()
+    const thread = state.threads.find((t) => t.id === threadId)
+    const project = thread ? state.projects.find((p) => p.id === thread.projectId) : undefined
+    const preset: TrustPreset = project?.trustPreset ?? 'approval'
+    const harness = thread?.harness ?? 'pi'
+
+    const forwardToUser = (enriched: ExtensionUiRequest) => {
+      this.emitStatus(threadId, 'waiting_ui')
+      this.listeners.onExtensionUiRequest(enriched)
+    }
+
+    if (req.method !== 'confirm' && req.method !== 'select') {
+      forwardToUser({ ...req, policyPreset: preset })
+      return
+    }
+
+    if (req.method === 'select') {
+      const opts = req.options ?? []
+      // Only treat select as an approval prompt when it offers recognisable allow/deny options;
+      // ordinary extension menus (templates, branches, ...) always go to the user.
+      const looksLikeApproval =
+        pickSelectOption(opts, true) !== undefined || pickSelectOption(opts, false) !== undefined
+      if (!looksLikeApproval) {
+        forwardToUser({ ...req, policyPreset: preset })
+        return
+      }
+    }
+
+    const assessment = assessToolRequest({ title: req.title, message: req.message })
+    const decision = decideApproval(preset, assessment)
+    const risk = { level: assessment.level, reasons: assessment.reasons }
+
+    if (decision.action === 'ask') {
+      forwardToUser({ ...req, policyPreset: preset, risk })
+      return
+    }
+
+    const allow = decision.action === 'allow'
+    let response: ExtensionUiResponse
+    if (req.method === 'confirm') {
+      response = { id: req.id, confirmed: allow }
+    } else {
+      const value = pickSelectOption(req.options ?? [], allow)
+      if (value === undefined && allow) {
+        // No unambiguous one-time allow option: let the human decide.
+        forwardToUser({ ...req, policyPreset: preset, risk })
+        return
+      }
+      response = value !== undefined ? { id: req.id, value } : { id: req.id, cancelled: true }
+    }
+    runtime
+      .respondExtensionUi(response)
+      .then(() => {
+        const noticeEvent: Record<string, unknown> = {
+          type: 'extension_ui_request',
+          method: 'notify',
+          notifyType: allow ? 'info' : 'warning',
+          message: `${TRUST_PRESET_LABELS[preset]}：${decision.reason}（${req.title}）`,
+        }
+        this.updateTimeline(threadId, noticeEvent)
+        this.listeners.onThreadEvent({ threadId, harness, event: noticeEvent })
+      })
+      .catch(() => {
+        // Auto-response failed (e.g. process died) — fall back to asking the user.
+        forwardToUser({ ...req, policyPreset: preset, risk })
+      })
+  }
+
   private emitStatus(threadId: string, status: ThreadEntry['status'], extra: Partial<ThreadStatusUpdate> = {}): void {
     this.store.mutate((draft) => {
       const t = draft.threads.find((item) => item.id === threadId)
@@ -458,6 +541,7 @@ export class RuntimeManager {
       providerId: thread.modelProvider,
       modelId: thread.modelId,
       thinkingLevel: thread.thinkingLevel,
+      executablePath: status.path,
     })
 
     this.emitStatus(thread.id, 'starting', { lastError: null, disconnectInfo: null })
@@ -495,8 +579,7 @@ export class RuntimeManager {
           })
         },
         onExtensionUiRequest: (req) => {
-          this.emitStatus(thread.id, 'waiting_ui')
-          this.listeners.onExtensionUiRequest(req)
+          this.handleExtensionUiRequest(thread.id, runtime, req)
         },
         onExit: (info) => {
           if (this.runtimes.get(thread.id) === runtime) {
@@ -533,7 +616,21 @@ export class RuntimeManager {
         ? harnessChildEnvironment('omp', status.agentDir)
         : thread.harness === 'prime'
           ? harnessChildEnvironment('prime', status.agentDir, { PRIME_AGENT_TELEMETRY: '0' })
-          : harnessChildEnvironment('pi', status.agentDir),
+          : thread.harness === 'claude'
+            ? harnessChildEnvironment('claude', status.agentDir, {
+                MAX_THINKING_TOKENS: String(CLAUDE_THINKING_TOKENS[thread.thinkingLevel] ?? CLAUDE_THINKING_TOKENS.medium),
+              })
+            : harnessChildEnvironment(thread.harness, status.agentDir),
+      adapter.createBridge
+        ? {
+            cwd: thread.cwd,
+            sessionPath: thread.sessionPath,
+            providerId: thread.modelProvider,
+            modelId: thread.modelId,
+            thinkingLevel: thread.thinkingLevel,
+            executablePath: status.path,
+          }
+        : undefined,
     )
 
     this.runtimes.set(thread.id, runtime)

@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from 'react'
-import { FolderGit2, FolderPlus, GitFork, History, Keyboard, Plus, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react'
+import { FolderGit2, FolderPlus, GitFork, History, Keyboard, Plus, RefreshCw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import brandIcon from '../assets/brand-icon.png'
 import {
   HARNESS_IDS,
@@ -10,6 +10,13 @@ import {
   type ProjectEntry,
   type ThreadEntry,
 } from '@shared/types'
+import { TRUST_PRESET_LABELS, type TrustPreset } from '@shared/tool-policy'
+
+function trustIcon(preset: TrustPreset) {
+  if (preset === 'readonly') return <ShieldCheck size={13} color="#34d399" />
+  if (preset === 'auto') return <ShieldAlert size={13} color="#fbbf24" />
+  return <Shield size={13} color="#9aa7bd" />
+}
 
 function statusDotClass(status: ThreadEntry['status']): string {
   if (status === 'streaming' || status === 'starting' || status === 'compacting') return 'dot-streaming'
@@ -34,6 +41,7 @@ export function Sidebar({
   filterInputRef,
   onAddProject,
   onRemoveProject,
+  onOpenTrust,
   onNewThread,
   onSelectThread,
   onDeleteThread,
@@ -55,6 +63,7 @@ export function Sidebar({
   filterInputRef?: RefObject<HTMLInputElement | null>
   onAddProject: () => void
   onRemoveProject: (id: string) => void
+  onOpenTrust: (projectId: string) => void
   onNewThread: (projectId: string, harness: HarnessId) => void
   onSelectThread: (threadId: string) => void
   onDeleteThread: (threadId: string) => void
@@ -193,6 +202,14 @@ export function Sidebar({
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name}</span>
                 </div>
                 <div className="project-actions">
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    title={`权限预设：${TRUST_PRESET_LABELS[project.trustPreset ?? 'approval']}（点击配置）`}
+                    onClick={() => onOpenTrust(project.id)}
+                  >
+                    {trustIcon(project.trustPreset ?? 'approval')}
+                  </button>
                   <button
                     type="button"
                     className="icon-btn"
