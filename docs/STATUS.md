@@ -4,7 +4,7 @@
 
 ## 1. 当前进度总览
 
-- **当前阶段**：**Phase 1 MVP + 第 1 步（图标/快捷键/断线重连）+ 第 2 步（`@file` / `/slash` / 图片粘贴 / 会话分叉对比）+ Phase 2（多协议桥接扩展 + 工作区文件树/终端 + 虚拟滚动）+ Phase 3 第 1/2 项（项目信任与工具权限策略 + ego-browser / 浏览器型 MCP 协同）+ P1 评审修复（Claude/Codex 桥接、信任联动、浏览器标签页、TOML 解析，见 2.7 节）已全部完成并通过实窗验证**（具体观察指标见第 5 节）。
+- **当前阶段**：**Phase 1 MVP + 第 1 步（图标/快捷键/断线重连）+ 第 2 步（`@file` / `/slash` / 图片粘贴 / 会话分叉对比）+ Phase 2（多协议桥接扩展 + 工作区文件树/终端 + 虚拟滚动）+ Phase 3 第 1/2 项（项目信任与工具权限策略 + ego-browser / 浏览器型 MCP 协同）+ P1 评审修复（见 2.7 节）+ 设置页五入口与独立浏览器窗口（MCP / 插件 / 技能 / 使用情况 / 浏览器，见 2.8 节）已全部完成并通过实窗验证**（具体观察指标见第 5 节）。
 - **架构路线确认**：
   - 从空项目目录开始构建自主可控的编码工作台；
   - 经环境检查本机无 Rust (`rustc`/`cargo`) 与 MSVC Build Tools (`cl.exe`/`link.exe`) 后，确认采用 **Electron 35 + TypeScript + React 19 + `electron-vite`**（零原生 C++ 插件）。
@@ -63,14 +63,41 @@
 | **浏览器活动标签页与切换、openUrl 单轮** | [browser-companion.ts](electron/main/browser-companion.ts), [BrowserPanel.tsx](src/renderer/src/components/BrowserPanel.tsx), [ipc.ts](electron/main/ipc.ts), [preload/index.ts](electron/preload/index.ts), [types.ts](src/shared/types.ts) | `SPACE_PREAMBLE` 优先按 `task.tabs()` 的 active 标记匹配当前活动页（而非 `pages[0]`）；`openUrl` 一轮脚本同时返回 `{url,title,spaceId,tabs}`，面板不再追加第二轮 `browserTabs`；新增 `activateTab(label)`（`bringToFront`，单轮返回新标签列表）与 `browser:activateTab` IPC，标签页行可点击切换并高亮活动页。 |
 | **MCP TOML 解析加固** | [browser-companion.ts](electron/main/browser-companion.ts) | `parseCodexMcpToml` 支持单引号字面量、跨行 `args` 数组（括号配平）、行尾注释、带引号服务器名与 `[mcp_servers.x.env]` 子表（保留服务器、忽略子表键）；`ego` 分类改为词边界匹配避免误伤 `category` 等词。 |
 
+## 2.8 设置页五入口与独立浏览器窗口 (2026-11-21)
+
+按 Codex 桌面版的「集中管理 / 插件详情 / 按会话分享网页内容」交互范式，为设置新增 **MCP 服务器、插件、技能、使用情况、浏览器** 五个入口；MCP / 插件 / 技能共用 Pi / OMP / Prime 引擎切换器，展示当前项目、配置来源与生效状态。以本机真实 CLI（Pi 1.5.2、OMP 18.18.9、Prime 0.10.3 Rust）逐条探测后按实际能力开放：
+
+| 类别 | 变更文件 | 说明 |
+| :--- | :--- | :--- |
+| **共享纯函数层** | [src/shared/mcp-config.ts](../src/shared/mcp-config.ts), [src/shared/extensions.ts](../src/shared/extensions.ts), [src/shared/browser-url.ts](../src/shared/browser-url.ts) | MCP 配置解析（JSON/Codex TOML，browser-companion 改为 re-export 保持测试兼容）、rank 标注与同名/同端点覆盖合并 `resolveMcpShadowing`；三引擎能力门控 `EXTENSION_ENGINE_CAPABILITIES`、CLI 输出防御式解析（`pi mcp list --json`、`omp plugin/skill/stats/usage --json`、`prime-agent package/sessions`）、会话用量提取 `extractUsageRecordsFromSession`（Pi/OMP/Prime `usage.cost.total` 与 Claude `input_tokens` 双格式）与 `aggregateUsage`（按记录键去重，函数内部再做一层双保险；无费用时统一输出「未提供」）。 |
+| **引擎扩展服务** | [electron/main/extensions/](../electron/main/extensions/) | `engine-cli.ts` 统一执行三引擎子命令（`harnessChildEnvironment` 修正 OMP `PI_CONFIG_DIR` 绝对路径崩溃——本机直跑 `omp stats` 复现该崩溃，经服务执行正常）。`mcp-service.ts`：Pi 经 `pi mcp add/remove [-l]`（用户级 + 信任项目级）、Prime 经 `prime-agent mcp add/list/remove`（用户级，认证交 Prime）、OMP 直接原子写自有配置（用户级 `mcp.json` / 项目 `.omp/mcp.json`），第三方来源（Claude `.claude.json` 按项目过滤、Codex TOML、Gemini、Cursor、Windsurf、VS Code `mcp.servers` 内层抽取、项目根回退）按 OMP mcp-config 文档 rank 只读展示覆盖关系；「生效状态」由 `RuntimeManager.getEngineSessionState` 对比配置 mtime 与运行时会话 `startedAt`，标注「启动后已修改需空闲重连」。`package-service.ts`：`pi install/remove/update`、`omp plugin install/uninstall/upgrade`、`prime-agent package install/remove/update`，解析文本/JSON 列表并标注作用范围。`skill-service.ts`：OMP `omp skill list --json`（含 `claude:user` 跨引擎来源）、Pi/Prime 技能目录扫描 + SKILL.md frontmatter、Prime 项目 Markdown 指令单独分类；`readSkillFile` 白名单预览（仅最近一次发现返回的路径，256KB 截断）。 |
+| **用量报表** | [electron/main/usage-service.ts](../electron/main/usage-service.ts), [electron/main/rpc/manager.ts](../electron/main/rpc/manager.ts), [electron/main/rpc/runtime.ts](../electron/main/rpc/runtime.ts) | `UsageService` 扫描会话 `.jsonl`（mtime 缓存、400 文件上限），按记录键全局去重——恢复会话、分叉、重复回放共享同一条记录，最早会话入账；`getSessionUsageSnapshot` 经 `get_session_stats` 校验运行中会话总量；引擎全局统计 `omp stats --json` / `prime-agent sessions --json`（daemon 未运行时降级提示）**单独展示不与项目明细相加**；账户额度接 `omp usage --json`（Pi/Prime 标「未提供」）。 |
+| **独立浏览器窗口** | [electron/main/browser-window-service.ts](../electron/main/browser-window-service.ts), [src/renderer/browser.html](../src/renderer/browser.html), [src/renderer/browser-src/](../src/renderer/browser-src/) | 第二 Vite 渲染入口 `browser.html`：每标签一个 `WebContentsView`，统一 `persist:agentui-browser` 分区会话（登录状态与工作台隔离）；权限请求默认拒绝、弹窗转新标签、仅 http(s)、`did-navigate` 拦 `file://`；`browserWin:setInsets` 由渲染端上报工具栏高度后挂载视图；分享面板把链接 / 选中文本 / 截图经 `agentui:shareToComposer` 填入目标会话输入框（目标会话校验 + 10MB 图片上限），三个引擎都能接收。CSP 插件为浏览器页放行 `img-src http(s)`（favicon）。 |
+| **IPC 与渲染端** | [src/shared/types.ts](../src/shared/types.ts), [electron/main/ipc.ts](../electron/main/ipc.ts), [electron/preload/index.ts](../electron/preload/index.ts), [src/renderer/src/components/SettingsPage.tsx](../src/renderer/src/components/SettingsPage.tsx), [SettingsExtensionsPages.tsx](../src/renderer/src/components/SettingsExtensionsPages.tsx), [App.tsx](../src/renderer/src/App.tsx), [WorkbenchHeader.tsx](../src/renderer/src/components/WorkbenchHeader.tsx) | 新增 `ext:*` / `usage:getReport` / `browserWin:*` 路由与 preload API（实窗挂载 84 个方法）。设置导航新增五节；MCP/插件/技能页共用 `EngineSwitcher`（Segments Pi/OMP/Prime），展示当前项目徽标、配置来源清单（可编辑标注）、添加服务器表单（stdio/http 双形态，Pi 项目级需信任）、技能搜索/预览（MarkdownView）/插入 `/技能名`（会话已注册时用原名，否则回退 `/skill:名称`）；用量页提供日期/项目/引擎/模型筛选与「Token 消耗、上下文占用、账户额度」三卡 + 按项目/模型/日期/会话明细；顶栏新增独立浏览器按钮（AppWindow 图标），`Ctrl+K` 命令面板含「打开独立浏览器」。 |
+
+## 2.9 五入口验收修复 (2026-11-21)
+
+实窗验收发现的问题逐项修复（类型检查、构建、187 项测试与 19/19 实窗冒烟全部通过）：
+
+| 问题 | 根因与修复 |
+| :--- | :--- |
+| **跨会话分享截图后附件被清空** | 切换会话的 effect 会清空 `attachedImages`，分享追加被其抹掉。现在跨会话分享截图时跳过该次清空并**整体替换**为该截图（同会话分享仍为追加，受 4 张上限约束）；以双会话实窗用例验证（chips=1 → 追加后 chips=2）。 |
+| **Prime MCP 无法从界面删除** | 删除按钮此前绑定 `managed`（文件直写）标志，Prime 条目由 CLI 管理被误判不可删。`RawMcpEntry`/`McpFileSpec` 新增显式 `deletable` 标志：Prime settings.json 条目 `managed:false + deletable:true`（删除走 `prime-agent mcp remove`），OMP 第三方来源保持不可删。 |
+| **费用缺失误报为 0** | 混合费用数据时聚合只累加有费用的记录，读起来像完整估算。`UsageUsageTotals` 新增 `costCalls`（携带费用的调用数），UI 的 `costLabel` 在 `costCalls < calls` 时标注「部分：x/y 次调用含费用」，`UsageSessionRow` 改为继承 totals 类型。 |
+| **Pi 实况检查未传项目目录** | `pi mcp list --json` 现在携带 `cwd = 项目目录`，项目级服务器（信任项目）的实况状态才能对得上。 |
+| **项目级插件更新未带项目语境** | `packageUpdate` 增加 `scope` 参数并透传项目目录：OMP 追加 `--scope=project`、Pi 在项目目录下执行；界面按包的 scope 调用，「更新全部」固定用户级。 |
+| **Pi 技能目录遗漏** | 按 docs.pi.dev/latest/skills 补齐：`.agents/skills` 用户级（通用规范）与项目祖先目录（沿目录向上、遇仓库根即停）；扫描改为**递归**发现 SKILL.md（Agent Skills 规范）；技能插入固定用 Pi 文档规定的 `/skill:名称` 强制调用形式。 |
+| **「会话已加载」跨引擎误标** | 技能页新增 `sessionEngine`（活动会话所属引擎），只有引擎一致时才按命令名标「会话已加载」。 |
+| **插件安装前缺少摘要** | 「安装」改为两步确认：先展示来源 / 作用范围 / 引擎摘要与「版本、包含资源在安装后于列表详情查看」的说明，确认后才执行。 |
+
 ## 3. 已完成文件清单
 
 - **配置、资源与文档**：`package.json`、`tsconfig.json`、`tsconfig.node.json`、`tsconfig.web.json`、`electron.vite.config.ts`、`vitest.config.ts`、`assets/{icon.ico,icon.png}`、`AGENTS.md`、`README.md`、`docs/PLAN.md`、`docs/STATUS.md`
-- **共享层 (`src/shared/`)**：`types.ts`、`event-reducer.ts`、`ui-queue.ts`、`shortcuts.ts`、`composer-autocomplete.ts`、`capabilities.ts`、`tool-policy.ts`
-- **主进程 (`electron/main/`)**：`index.ts`、`ipc.ts`、`store.ts`、`discovery.ts`、`model-catalog.ts`、`process-utils.ts`、`workspace-files.ts`、`workspace-browser.ts`、`browser-companion.ts`、`terminal-service.ts`、`git/git-service.ts`、`sessions/catalog.ts`、`rpc/jsonl.ts`、`rpc/chunk-assembly.ts`、`rpc/adapters.ts`、`rpc/bridge.ts`、`rpc/bridges/{claude,codex,acp}.ts`、`rpc/runtime.ts`、`rpc/manager.ts`
+- **共享层 (`src/shared/`)**：`types.ts`、`event-reducer.ts`、`ui-queue.ts`、`shortcuts.ts`、`composer-autocomplete.ts`、`capabilities.ts`、`tool-policy.ts`、`mcp-config.ts`、`extensions.ts`、`browser-url.ts`
+- **主进程 (`electron/main/`)**：`index.ts`、`ipc.ts`、`store.ts`、`discovery.ts`、`model-catalog.ts`、`process-utils.ts`、`workspace-files.ts`、`workspace-browser.ts`、`browser-companion.ts`、`browser-window-service.ts`、`terminal-service.ts`、`usage-service.ts`、`extensions/{engine-cli,mcp-service,package-service,skill-service}.ts`、`git/git-service.ts`、`sessions/catalog.ts`、`rpc/jsonl.ts`、`rpc/chunk-assembly.ts`、`rpc/adapters.ts`、`rpc/bridge.ts`、`rpc/bridges/{claude,codex,acp}.ts`、`rpc/runtime.ts`、`rpc/manager.ts`
 - **预加载 (`electron/preload/`)**：`index.ts`、`index.d.ts`
-- **渲染端 (`src/renderer/`)**：`index.html`、`src/main.tsx`、`src/App.tsx`、`src/styles.css`、`src/assets/brand-icon.png`、`src/components/{Sidebar,ComposerAutocomplete,ForkTreeModal,DiffPanel,WorkspaceFilesPanel,TerminalPanel,MarkdownView,ThinkingBlock,ToolCallCard,ExtensionUiModal,SettingsModal,ShortcutsModal,ProjectTrustModal,BrowserPanel}.tsx`
-- **单元测试 (`tests/`)**：`adapters.test.ts`、`bridges.test.ts`、`browser-companion.test.ts`（含本机装有 ego-browser 时的真实探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例）、`chunk-assembly.test.ts`、`claude-live-handshake.test.ts`（本机装有 Claude CLI 时运行，否则跳过）、`claude-session-catalog.test.ts`、`composer-autocomplete.test.ts`、`diagnostics.test.ts`、`event-reducer.test.ts`、`git-service.test.ts`、`jsonl.test.ts`、`p1-fixes.test.ts`（P1 评审修复：桥接去重/审批撤销/set_model 双层回滚/Codex 沙箱联动/TOML 解析）、`process-utils.test.ts`、`security-hardening.test.ts`、`shortcuts.test.ts`、`store-and-sessions.test.ts`、`tool-policy.test.ts`、`trust-policy-manager.test.ts`、`ui-queue-and-manager.test.ts`、`workspace-browser-and-terminal.test.ts`、`workspace-files-and-fork.test.ts`
+- **渲染端 (`src/renderer/`)**：`index.html`、`browser.html`（独立浏览器窗口入口）、`src/main.tsx`、`src/App.tsx`、`src/styles.css`、`src/assets/brand-icon.png`、`browser-src/{main.tsx,BrowserApp.tsx,browser.css}`、`src/components/{Sidebar,ComposerAutocomplete,ForkTreeModal,DiffPanel,WorkspaceFilesPanel,TerminalPanel,MarkdownView,ThinkingBlock,ToolCallCard,ExtensionUiModal,SettingsModal,ShortcutsModal,ProjectTrustModal,BrowserPanel,SettingsExtensionsPages}.tsx`
+- **单元测试 (`tests/`)**：`adapters.test.ts`、`bridges.test.ts`、`browser-companion.test.ts`（含本机装有 ego-browser 时的真实探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例）、`chunk-assembly.test.ts`、`claude-live-handshake.test.ts`（本机装有 Claude CLI 时运行，否则跳过）、`claude-session-catalog.test.ts`、`composer-autocomplete.test.ts`、`diagnostics.test.ts`、`event-reducer.test.ts`、`extensions.test.ts`（MCP 覆盖合并 / OMP 配置读写 / CLI 输出解析 / 用量去重聚合 / 地址栏规范化）、`git-service.test.ts`、`jsonl.test.ts`、`p1-fixes.test.ts`（P1 评审修复：桥接去重/审批撤销/set_model 双层回滚/Codex 沙箱联动/TOML 解析）、`process-utils.test.ts`、`security-hardening.test.ts`、`shortcuts.test.ts`、`store-and-sessions.test.ts`、`tool-policy.test.ts`、`trust-policy-manager.test.ts`、`ui-queue-and-manager.test.ts`、`workspace-browser-and-terminal.test.ts`、`workspace-files-and-fork.test.ts`
 
 ## 4. 已踩过的 Windows 环境坑（供后续参考）
 
@@ -121,3 +148,27 @@
 - `npm run build`：通过，CommonJS `out/preload/index.cjs` 5.87 kB（CJS 铁律保持）、renderer 1,779.41 kB。
 - Electron 实窗冒烟（CDP + 隔离 `AGENTUI_STATE_PATH`）：**SMOKE PASS** —— `window.agentui` 挂载 **59 个 IPC 方法**（含 `browserActivateTab` / `setProjectTrust`）；信任预设 approval→readonly 持久化、非法预设被拒；`readWorkspaceFile('../../windows/win.ini')` 越界被拒；ego-browser 探测 **v0.6.3.17** 可用、`browserTabs` 单轮返回数组；7 引擎探测 pi/omp/prime/claude 就绪，codex/acp/dsh 本机未安装。
 - **验证边界**：Codex 本机仍未安装 CLI，沙箱联动与审批撤销由单元测试按 app-server v2 协议覆盖，未做真实进程端到端验证；`activateTab` 的 `bringToFront` 行为依赖 ego-browser 页面 API（本机 0.6.3.17），真实多标签切换待用户使用时确认。
+
+### 5.6 设置页五入口与独立浏览器窗口验证记录 (2026-11-21)
+
+- **CLI 能力探测（实施前置）**：以本机真实 CLI 逐条验证 `pi mcp --help`（add/remove/list/login/logout + `--json`、`-l` 项目级）、`pi install/remove/list`、`omp plugin/skill/config/stats/usage --help` 与 JSON 输出、`prime-agent mcp/package/sessions`（确认 Prime 不支持 `--json`，需文本解析；`sessions --json` 依赖 daemon）。OMP 文档确认 MCP 第三方来源优先级（Claude > Codex > Gemini > Cursor/Windsurf > VS Code > 项目根回退，同名第一次定义获胜）。
+- `npm run typecheck`：通过（node/web 两套 tsconfig 零错误）。
+- `npm test`：通过（**22 个测试文件、183 个用例通过、2 个门控跳过**）。新增 `tests/extensions.test.ts` 17 例：MCP rank 覆盖合并（同名 + 同端点遮蔽、claude 按项目过滤、Codex TOML 回归）、OMP 用户级 `mcp.json` 原子写入与删除（临时目录 + 桩 discovery）、非法名称与 CLI 未就绪拒错、`pi mcp list --json` / `omp plugin` / `omp skill` / 文本包列表 / SKILL frontmatter 解析、Pi+Claude 双格式用量提取、`aggregateUsage` 去重与筛选与「未提供」语义、`omp stats/usage`、`prime sessions` 解析、地址栏规范化。
+- `npm run build`：通过，双渲染入口产出 `out/renderer/index.html` 与 `out/renderer/browser.html`；CommonJS `out/preload/index.cjs` 8.50 kB（CJS 铁律保持）。
+- Electron 实窗冒烟（CDP + 隔离 `AGENTUI_STATE_PATH` 临时目录）：**SMOKE PASS（15/15）** —— `window.agentui` 挂载 **84 个 IPC 方法**；三引擎 + Claude 就绪（pi 1.5.2 / omp 18.18.9 / prime 0.10.3 / claude 2.1.325）；OMP MCP 快照含 8 个配置来源（用户级 + Claude/Codex/Gemini/Cursor/Windsurf 第三方）与 2 个第三方服务器；Pi / Prime 快照各 1 个来源；OMP 技能发现 3 项（首个来源 `claude:user` 跨引擎目录）；Pi 技能扫描 1 项；OMP 插件列表（npm + marketplace）；用量报表返回 totals / sessions / 引擎全局（omp:true，prime 因 daemon 未运行降级）/ 账户额度（无报告标不可用）；设置导航含五个新入口；MCP 设置页渲染且三引擎切换器（Pi/OMP/Prime Agent）可切换；技能页渲染带来源徽标；独立浏览器窗口打开（`browser.html` + 1 个初始标签 + 地址栏 + 分享面板），向不存在会话分享被拒（「目标会话不存在」）。
+- **验证边界**：MCP 添加/删除、插件安装/卸载、Pi `mcp list --json` 实况检查未在真实配置上执行（避免改动用户引擎配置），由 `tests/extensions.test.ts` 以临时目录与桩 discovery 覆盖读写逻辑；Prime daemon 未运行，`prime-agent sessions --json` 全局统计走降级提示；用量报表当前无本地用量数据（totals 为 0 且给出说明），聚合与去重由单元测试覆盖。
+
+### 5.7 五入口验收修复验证记录 (2026-11-21)
+
+- `npm run typecheck`：通过（node/web 零错误）。
+- `npm test`：通过（**22 个测试文件、187 个用例通过、2 个门控跳过**）。`extensions.test.ts` 增至 21 例，新增：Prime 条目 `managed:false + deletable:true`、OMP 第三方来源 `deletable:false`、Pi 技能递归扫描（嵌套 SKILL.md）+ 项目祖先目录 `.agents/skills`（`.git` 仓库根截停）+ 白名单预览拒绝、Prime 项目指令 `executable:false`、`aggregateUsage` 的 `costCalls` 混合费用语义。
+- `npm run build`：通过（双渲染入口，CJS preload 铁律保持）。
+- Electron 实窗冒烟（CDP + 隔离临时 state）：**SMOKE PASS（19/19）** —— 新增用例：Prime MCP 快照所有条目 `deletable === true`（界面即有删除按钮）；Pi 技能扫描含 `.agents/skills（用户级，通用规范）` 来源且 note 含 `/skill:`；插件页「安装」进入两步确认摘要（来源/作用范围/引擎 + 安装后解析说明）；使用情况页三卡渲染；**双会话截图分享**：跨会话分享后附件为 1 张（替换语义，不再被切线程清空），同会话再分享追加为 2 张。既有 15 项检查全部回归通过。
+- **验证边界**：Prime MCP 删除实际走 `prime-agent mcp remove`，界面按钮的出现逻辑已由快照断言（deletableAll=true）覆盖，真实删除未在用户配置上执行（避免改动本机 Prime 配置）；Pi `mcp list --json` 带 cwd 的实况检查仍属连接型操作，未做真实执行；OMP 账户额度仍取决于是否有已认证账户的用量报告。
+
+### 5.8 草稿、费用与 Prime 插件复验 (2026-11-21)
+
+- 浏览器分享按目标会话写入草稿，切换后可找回各自的文字和附件。实窗验证了两个会话分别保留草稿、截图追加和切回后恢复附件。
+- 用量按每个分组判断价格数据是否存在。无费用数据的行显示「未提供」，已知费用为零时照常显示，混合总计标出覆盖的调用数。已用混合数据验证报表界面。
+- Prime 0.10.3 Rust 只提供用户级插件操作。实窗验证了项目级请求被拒绝、临时配置中用户级本地包安装成功，以及 Pi 仍可选择项目级。Prime MCP 的添加和删除也已用临时配置复测。
+- 类型检查和生产构建通过。188 项测试通过，2 项门控测试跳过。

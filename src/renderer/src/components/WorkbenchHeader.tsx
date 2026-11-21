@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { ArrowLeft, ChevronDown, Command, Files, GitCompareArrows, GitFork, Globe, Minimize2, Terminal } from 'lucide-react'
+import { AppWindow, ArrowLeft, ChevronDown, Command, Files, GitCompareArrows, GitFork, Globe, Minimize2, Terminal } from 'lucide-react'
 import { HARNESS_LABELS, type ContextUsageInfo, type HarnessId, type ThreadEntry } from '@shared/types'
 import brandIcon from '../assets/brand-icon.png'
 import { statusDotClass, statusLabel } from '../workbench'
@@ -23,6 +23,7 @@ interface Props {
   terminalDocked: boolean
   onToggleTool: (tab: WorkspacePanelTab) => void
   onOpenPalette: () => void
+  onOpenBrowserWindow: () => void
   onFork: () => void
   onCompact: () => void
   onCloseSettings?: () => void
@@ -30,7 +31,7 @@ interface Props {
 
 export function WorkbenchHeader({
   thread, harness, ready, cwd, context, statusText, activeTool, terminalDocked,
-  onToggleTool, onOpenPalette, onFork, onCompact, onCloseSettings,
+  onToggleTool, onOpenPalette, onOpenBrowserWindow, onFork, onCompact, onCloseSettings,
 }: Props) {
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const status = statusText || (thread ? statusLabel(thread.status) : ready ? '引擎就绪' : '引擎未就绪')
@@ -91,6 +92,10 @@ export function WorkbenchHeader({
         <span className={`dot ${thread ? statusDotClass(thread.status) : ready ? 'dot-ready' : 'dot-idle'}`} title={status} role="img" aria-label={status} />
       </div>}
       <div className="topbar-right">
+        <button type="button" className="icon-btn" title="独立浏览器窗口（登录状态与工作台隔离）" aria-label="独立浏览器窗口"
+          onClick={onOpenBrowserWindow}>
+          <AppWindow size={15} />
+        </button>
         <button type="button" className="icon-btn palette-trigger" title="命令面板 (Ctrl+K)" aria-label="命令面板" onClick={onOpenPalette}>
           <Command size={15} />
         </button>

@@ -21,6 +21,9 @@
 | [src/shared/composer-autocomplete.ts](src/shared/composer-autocomplete.ts) | 纯函数 `@file` / `/slash` 触发检测、路径模糊评分与内置斜杠命令解析 |
 | [src/shared/capabilities.ts](src/shared/capabilities.ts) | 7 引擎 × 11 项能力矩阵 `HARNESS_CAPABILITIES` 与桥接限制脚注（设置页展示） |
 | [src/shared/tool-policy.ts](src/shared/tool-policy.ts) | 纯函数项目信任策略：`TrustPreset`（只读/审批/自动）、只读命令分类、约 21 条高风险规则、`assessToolRequest` / `decideApproval` / `pickSelectOption` |
+| [src/shared/mcp-config.ts](src/shared/mcp-config.ts) | MCP 配置文件解析（JSON / Codex TOML）、`collectMcpEntries`（rank 标注）、`resolveMcpShadowing`（同名/同端点覆盖关系）；browser-companion 从此 re-export |
+| [src/shared/extensions.ts](src/shared/extensions.ts) | 设置页「MCP / 插件 / 技能 / 使用情况」共享类型与纯函数：三引擎能力门控、CLI 输出解析（`pi mcp list` / `omp plugin` / `omp skill` / `omp stats` / `omp usage` / `prime-agent sessions`）、`extractUsageRecordsFromSession` + `aggregateUsage`（单次模型调用去重聚合） |
+| [src/shared/browser-url.ts](src/shared/browser-url.ts) | 浏览器地址栏输入规范化（无协议自动补全） |
 | [assets/](assets/) | 应用透明圆角图标资源（`icon.ico` 多分辨率 16–256px、`icon.png` 512px） |
 | [electron/main/index.ts](electron/main/index.ts) | Electron 入口、窗口创建与图标绑定、`AppUserModelId`、`sandbox: true`、`.cjs` preload、`will-navigate` 安全拦截、`AGENTUI_STATE_PATH` |
 | [electron/main/ipc.ts](electron/main/ipc.ts) | 注册所有 `ipcMain.handle` 路由 |
@@ -39,12 +42,16 @@
 | [electron/main/workspace-files.ts](electron/main/workspace-files.ts) | `WorkspaceFileService`：基于 `git ls-files -z`（含非 Git 目录回退）与短缓存的 `@file` 文件索引 |
 | [electron/main/workspace-browser.ts](electron/main/workspace-browser.ts) | `WorkspaceBrowserService`：文件树懒加载 listing 与只读预览（路径越界守卫、隐藏目录过滤、512KB 截断、二进制检测、语言识别） |
 | [electron/main/terminal-service.ts](electron/main/terminal-service.ts) | `TerminalService`：零原生非 PTY 命令运行器（显式 shell 进程、并发上限 4、10 分钟超时、进程树强杀） |
-| [electron/main/browser-companion.ts](electron/main/browser-companion.ts) | `BrowserCompanionService`：ego-browser 探测与快捷控制（临时 `.mjs` + `nodejs -e import`、串行队列、仅 http(s)、stdout/stderr 双流搜结果）、4 类 MCP 配置只读扫描与浏览器型分类 |
+| [electron/main/extensions/](electron/main/extensions/) | `engine-cli.ts`（三引擎 CLI 子命令执行，带 `harnessChildEnvironment` 环境修正）、`mcp-service.ts`（Pi `pi mcp add/remove/list --json`、OMP 自有配置直写 + 第三方来源覆盖展示、Prime `prime-agent mcp`；含「配置改动对运行中会话的生效状态」）、`package-service.ts`（`pi install/remove/update/list`、`omp plugin`、`prime-agent package`）、`skill-service.ts`（`omp skill list --json`、Pi/Prime 技能目录扫描、`readSkillFile` 白名单预览） |
+| [electron/main/usage-service.ts](electron/main/usage-service.ts) | `UsageService`：`.jsonl` 会话用量提取 + 按记录键全局去重（恢复/分叉/回放不重复入账）、`get_session_stats` 校验会话总量、`omp stats/usage` 与 `prime-agent sessions --json` 引擎全局统计（与项目明细分开，不重叠相加） |
+| [electron/main/browser-window-service.ts](electron/main/browser-window-service.ts) | `BrowserWindowService`：独立多标签浏览器窗口（每标签一个 `WebContentsView`、`persist:agentui-browser` 隔离会话、权限请求默认拒绝、弹窗转新标签、仅 http(s)、`browserWin:setInsets` 挂载视图）；链接/选中文本/截图经 `agentui:shareToComposer` 填入指定会话输入框 |
+| [electron/main/browser-companion.ts](electron/main/browser-companion.ts) | `BrowserCompanionService`：ego-browser 探测与快捷控制（临时 `.mjs` + `nodejs -e import`、串行队列、仅 http(s)、stdout/stderr 双流搜结果）、MCP 配置只读扫描与浏览器型分类（解析器位于 `@shared/mcp-config`，此处 re-export 保持测试兼容） |
 | [electron/main/git/git-service.ts](electron/main/git/git-service.ts) | `GitService`：`status -z`、staged/unstaged/untracked diff、Stage/Unstage/Discard/Commit、Worktree 增删 |
 | [electron/preload/index.ts](electron/preload/index.ts) | 通过 `contextBridge.exposeInMainWorld('agentui', api)` 暴露只读安全 API |
 | [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、时间线虚拟滚动（react-virtual 动态测高 + 贴底跟随）、`@file`/`/slash` 补全、图片粘贴/拖拽、分叉树与对比、在对应会话时间线内排队显示 `ExtensionUiCard`、模型/Thinking 切换、Steer/Follow-up/Abort |
-| [src/renderer/src/components/](src/renderer/src/components/) | `WorkbenchHeader`（标题栏与工作区工具）、`CommandPalette`（搜索会话与快速导航）、`Sidebar`（可折叠项目、会话与引擎状态）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（变更、文件、终端、浏览器与工作树标签，支持预览回合 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsPage`（引擎与模型、外观与布局、会话与快捷键、项目与权限、诊断与关于）、`ShortcutsModal`、`ExtensionUiCard`（内嵌审批、权限预设与高风险命令）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
-| [tests/](tests/) | Vitest 单元测试套件（当前 21 个测试文件；`claude-live-handshake.test.ts` 为真实 CLI 集成测试，未安装时自动跳过；`browser-companion.test.ts` 含真实 ego 探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例；`p1-fixes.test.ts` 覆盖 P1 评审修复：Claude/Codex 桥接去重与审批撤销、set_model 双层回滚、Codex 信任预设沙箱联动、MCP TOML 解析） |
+| [src/renderer/src/components/](src/renderer/src/components/) | `WorkbenchHeader`（标题栏、工作区工具与独立浏览器按钮）、`CommandPalette`（搜索会话与快速导航，含「打开独立浏览器」）、`Sidebar`（可折叠项目、会话与引擎状态）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（变更、文件、终端、浏览器与工作树标签，支持预览回合 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsPage`（引擎与模型、**MCP 服务器、插件、技能、使用情况、浏览器**、外观与布局、会话与快捷键、项目与权限、诊断与关于；MCP/插件/技能共用 Pi/OMP/Prime 切换器）、`SettingsExtensionsPages`（五个新入口的实现，含添加服务器表单、插件安装/卸载、技能预览与插入输入框、用量报表三卡与筛选、浏览器窗口说明）、`ShortcutsModal`、`ExtensionUiCard`（内嵌审批、权限预设与高风险命令）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
+| [src/renderer/browser.html + browser-src/](src/renderer/browser.html) | 独立浏览器窗口渲染端（第二 Vite 入口）：标签条、地址栏、前进后退、刷新/停止、分享面板（链接/选中文本/截图 → 选目标会话）；`Ctrl+T`/`Ctrl+W` 管理标签 |
+| [tests/](tests/) | Vitest 单元测试套件（当前 22 个测试文件；`claude-live-handshake.test.ts` 为真实 CLI 集成测试，未安装时自动跳过；`browser-companion.test.ts` 含真实 ego 探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例；`p1-fixes.test.ts` 覆盖 P1 评审修复：Claude/Codex 桥接去重与审批撤销、set_model 双层回滚、Codex 信任预设沙箱联动、MCP TOML 解析；`extensions.test.ts` 覆盖 MCP 配置覆盖合并、OMP 配置读写、CLI 输出解析、用量去重聚合与地址栏规范化） |
 
 ## 3. 核心工程铁律（修改代码时严禁破坏）
 
@@ -72,6 +79,10 @@
    策略拦截统一位于 `RuntimeManager.handleExtensionUiRequest`（confirm/select），策略逻辑保持在 [src/shared/tool-policy.ts](src/shared/tool-policy.ts) 纯函数内。任何预设下 `level === 'high'` 都必须在对应会话的时间线内请求人工确认。input/editor 一律交由用户。自动应答失败时显示人工审批卡片。引擎静默自动执行时无法拦截——不要向用户承诺超出审批层的强制力。
 11. **ego-browser 脚本执行约束**：
    经 `BrowserCompanionService` 的临时 `.mjs` 文件 + `ego-browser nodejs -e "await import('file:///...')"` 执行（`shell: false`、超时 `killProcessTree`、串行队列）；URL 必须校验仅 http(s) 且经 `JSON.stringify` 注入，严禁向渲染端暴露任意脚本执行接口。ego-browser（Chromium 系）在管道 stdio 下把脚本 console 输出写到 **stderr**（退出码 0），结果标记必须双流搜索；版本号可为四段（`0.6.3.14`）。
+12. **独立浏览器窗口的隔离与安全边界**：
+   `BrowserWindowService` 的每个标签是 `WebContentsView`（`sandbox: true`、无 preload、无 nodeIntegration），统一挂载在 `persist:agentui-browser` 分区会话上——与工作台窗口的默认会话完全隔离，登录状态互不可见。权限请求（`setPermissionRequestHandler`）一律拒绝；`setWindowOpenHandler` 把弹窗转成新标签页并 `deny`；地址与弹窗 URL 必须通过 http(s)（`about:blank` 除外）校验，`did-navigate` 拦截 `file://`。浏览器窗口自身的 UI 页面（`browser.html`）受与主窗口相同的 `will-navigate` 白名单与 CSP 约束（`AGENTUI_BROWSER_CSP` 变体仅放宽 `img-src` 以加载 favicon）。分享到会话只写目标会话的输入框（`agentui:shareToComposer`），绝不静默发出 prompt。
+13. **扩展设置页的读写边界**：
+   MCP/插件/技能只对 **Pi / OMP / Prime** 三引擎开放（`EXTENSION_ENGINE_CAPABILITIES` 按真实 CLI 能力标注）。MCP 编辑写入引擎自有配置（Pi 经 `pi mcp add/remove`、Prime 经 `prime-agent mcp`、OMP 直接原子写 `mcp.json`/`.omp/mcp.json`），第三方来源（Claude/Codex/Gemini/Cursor/Windsurf/VS Code/项目根回退）一律只读展示并按 OMP 文档的 rank 标注「被覆盖」关系；环境变量与请求头只展示键名，不展示值。`EngineSkillService.readSkillFile` 只允许预览最近一次技能发现返回的文件路径（白名单），不得放开为任意路径读取。用量统计在 `aggregateUsage` 内按记录键（单次模型调用）去重，`extractUsageRecordsFromSession` 兼容 Pi/OMP/Prime（`usage.cost.total`）与 Claude（`input_tokens`）两种记录；缺失的费用/Token 必须显示「未提供」，引擎全局统计（omp stats / prime sessions）与项目明细分开展示，严禁相加。
 
 ## 4. 常用命令
 

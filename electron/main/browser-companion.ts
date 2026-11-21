@@ -13,6 +13,7 @@ import type {
   BrowserStatus,
   BrowserTabInfo,
 } from '@shared/types'
+import { isBrowserLikeMcp, parseMcpConfigFiles, type McpConfigFile } from '@shared/mcp-config'
 import {
   findRunnableCandidate,
   isAbsoluteForPlatform,
@@ -21,155 +22,14 @@ import {
   safeChildEnvironment,
 } from './process-utils'
 
+// MCP 配置解析（含 Codex TOML）已抽到 @shared/mcp-config，这里 re-export 保持测试兼容。
+export { isBrowserLikeMcp, parseMcpConfigFiles }
+export type { McpConfigFile }
+
 const RESULT_MARKER = 'AGENTUI_BROWSER_RESULT:'
 const SPACE_NAME = 'agentui-workbench'
-const BROWSER_MCP_PATTERN = /browser|playwright|puppeteer|chrome|chromium|\bego\b|ego-|browsermcp|browser-use/i
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024
 const STATUS_CACHE_MS = 60_000
-
-/** Classify an MCP server entry as browser-like based on name/command/args/url. */
-export function isBrowserLikeMcp(entry: { name: string; command?: string; args?: string[]; url?: string }): boolean {
-  const haystack = [entry.name, entry.command ?? '', ...(entry.args ?? []), entry.url ?? ''].join(' ')
-  return BROWSER_MCP_PATTERN.test(haystack)
-}
-
-export interface McpConfigFile {
-  source: string
-  kind: 'json' | 'toml'
-  content: string
-}
-
-function normalizeServerEntry(
-  source: string,
-  name: string,
-  raw: unknown,
-): BrowserMcpServer | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
-  const command = typeof obj.command === 'string' ? obj.command : undefined
-  const args = Array.isArray(obj.args) ? obj.args.filter((a): a is string => typeof a === 'string') : undefined
-  const url = typeof obj.url === 'string' ? obj.url : undefined
-  if (!command && !url) return null
-  const entry = { name, command, args, url }
-  return { source, ...entry, browserLike: isBrowserLikeMcp(entry) }
-}
-
-/** Minimal TOML reader for Codex `[mcp_servers.<name>]` sections (command/args/url only). */
-function tomlStrings(text: string): string[] {
-  return [...text.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g)].map((m) =>
-    m[1] !== undefined ? m[1].replace(/\\(["\\])/g, '$1').replace(/\\n/g, '\n') : (m[2] ?? ''),
-  )
-}
-
-function parseCodexMcpToml(source: string, content: string): BrowserMcpServer[] {
-  const servers: BrowserMcpServer[] = []
-  let current: { name: string; command?: string; args?: string[]; url?: string } | null = null
-  let inSubTable = false
-  const flush = () => {
-    if (current && (current.command || current.url)) {
-      servers.push({ source, ...current, browserLike: isBrowserLikeMcp(current) })
-    }
-    current = null
-    inSubTable = false
-  }
-  const lines = content.split(/\r?\n/)
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i].trim()
-    if (!line || line.startsWith('#')) continue
-    if (line.startsWith('[')) {
-      const header = line.match(/^\[\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([^.\]\s]+))(\.[^\]]*)?\]\s*(?:#.*)?$/)
-      if (header) {
-        const name = header[1] ?? header[2] ?? header[3]
-        if (header[4]) {
-          // Sub-table such as [mcp_servers.foo.env]: keep the server, ignore its keys.
-          if ((current as { name: string } | null)?.name === name) inSubTable = true
-          else {
-            flush()
-            current = { name }
-            inSubTable = true
-          }
-        } else {
-          flush()
-          current = { name }
-        }
-      } else {
-        flush()
-      }
-      continue
-    }
-    if (!current || inSubTable) continue
-    const kv = line.match(/^(command|args|url)\s*=\s*(.*)$/)
-    if (!kv) continue
-    const key = kv[1]
-    let value = kv[2].trim()
-    if (key === 'args') {
-      // Arrays may span several lines; gather until brackets balance.
-      while (!/\]\s*(#.*)?$/.test(value) && i + 1 < lines.length) {
-        i += 1
-        value += ` ${lines[i].trim()}`
-      }
-      current.args = tomlStrings(value.replace(/^\[|\]\s*(#.*)?$/g, ''))
-    } else {
-      const [str] = tomlStrings(value)
-      if (str !== undefined) {
-        if (key === 'command') current.command = str
-        else current.url = str
-      }
-    }
-  }
-  flush()
-  return servers
-}
-
-/** Parse MCP config files (Claude / project .mcp.json / Gemini JSON, Codex TOML). Pure & testable. */
-export function parseMcpConfigFiles(
-  files: readonly McpConfigFile[],
-  /** When given, only `~/.claude.json` project entries for these paths are listed. */
-  projectPaths?: readonly string[],
-): BrowserMcpServer[] {
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-  const allowed = projectPaths ? new Set(projectPaths.map(norm)) : null
-  const servers: BrowserMcpServer[] = []
-  for (const file of files) {
-    if (file.kind === 'toml') {
-      servers.push(...parseCodexMcpToml(file.source, file.content))
-      continue
-    }
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(file.content)
-    } catch {
-      continue
-    }
-    if (!parsed || typeof parsed !== 'object') continue
-    const root = parsed as Record<string, unknown>
-    const collect = (map: unknown, source: string) => {
-      if (!map || typeof map !== 'object') return
-      for (const [name, raw] of Object.entries(map as Record<string, unknown>)) {
-        const entry = normalizeServerEntry(source, name, raw)
-        if (entry) servers.push(entry)
-      }
-    }
-    collect(root.mcpServers, file.source)
-    // ~/.claude.json also nests per-project servers under projects[path].mcpServers
-    if (root.projects && typeof root.projects === 'object') {
-      for (const [projectPath, proj] of Object.entries(root.projects as Record<string, unknown>)) {
-        if (allowed && !allowed.has(norm(projectPath))) continue
-        if (proj && typeof proj === 'object') {
-          collect((proj as Record<string, unknown>).mcpServers, `${file.source} (${projectPath})`)
-        }
-      }
-    }
-  }
-  // Dedupe by name + command/url + args, keep first occurrence.
-  const seen = new Set<string>()
-  return servers.filter((s) => {
-    const key = `${s.name}|${s.command ?? ''}|${s.url ?? ''}|${(s.args ?? []).join(' ')}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
 
 export function egoExecutableCandidates(
   env: NodeJS.ProcessEnv = process.env,

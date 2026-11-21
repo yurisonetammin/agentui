@@ -4,12 +4,17 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, nativeImage, nativeTheme, shell } from 'electron'
 import { HarnessDiscoveryService } from './discovery'
 import { BrowserCompanionService } from './browser-companion'
+import { BrowserWindowService } from './browser-window-service'
+import { EngineMcpService } from './extensions/mcp-service'
+import { EnginePackageService } from './extensions/package-service'
+import { EngineSkillService } from './extensions/skill-service'
 import { GitService } from './git/git-service'
 import { registerIpcHandlers } from './ipc'
 import { ModelCatalogService } from './model-catalog'
 import { RuntimeManager } from './rpc/manager'
 import { StateStore } from './store'
 import { TerminalService } from './terminal-service'
+import { UsageService } from './usage-service'
 import { WorkspaceBrowserService } from './workspace-browser'
 import { WorkspaceFileService } from './workspace-files'
 
@@ -79,6 +84,19 @@ const runtimeManager = new RuntimeManager(store, discovery, {
     }
   },
 }, git)
+
+const browserWindowService = new BrowserWindowService({
+  getMainWindow: () => mainWindow,
+  resolveRendererFile: (name) => join(__dirname, '../renderer', name),
+  threadExists: (threadId) => store.snapshot().threads.some((t) => t.id === threadId),
+})
+const engineMcp = new EngineMcpService({
+  discovery,
+  getSessionState: (engine, projectPath) => runtimeManager.getEngineSessionState(engine, projectPath),
+})
+const enginePackages = new EnginePackageService(discovery)
+const engineSkills = new EngineSkillService(discovery)
+const usage = new UsageService(store, discovery, runtimeManager)
 
 function createMainWindow(): void {
   const rendererFilePath = join(__dirname, '../renderer/index.html')
@@ -166,9 +184,15 @@ void app.whenReady().then(async () => {
     workspaceFiles,
     workspaceBrowser,
     browserCompanion,
+    browserWindow: browserWindowService,
+    engineMcp,
+    enginePackages,
+    engineSkills,
+    usage,
     terminal,
     runtimeManager,
   })
+  browserWindowService.register()
   await discovery.refresh(store.snapshot().customBinaryPaths).catch(() => undefined)
   createMainWindow()
 

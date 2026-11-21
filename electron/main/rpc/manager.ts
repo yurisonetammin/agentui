@@ -11,6 +11,7 @@ import {
 } from '@shared/tool-policy'
 import {
   HARNESS_LABELS,
+  type ContextUsageInfo,
   type ExtensionUiRequest,
   type ExtensionUiResponse,
   type ForkThreadInput,
@@ -31,7 +32,7 @@ import type { GitService, GitTurnCapture } from '../git/git-service'
 import { harnessChildEnvironment } from '../process-utils'
 import { createForkedSessionFile, readSessionForkTree, readSessionTimeline } from '../sessions/catalog'
 import type { StateStore } from '../store'
-import { selectHarnessRpcAdapter } from './adapters'
+import { parseContextUsage, selectHarnessRpcAdapter } from './adapters'
 import { CLAUDE_THINKING_TOKENS } from './bridges/claude'
 import { RpcRuntime } from './runtime'
 
@@ -456,6 +457,41 @@ export class RuntimeManager {
       await runtime.stop()
     }
     await cleanup
+  }
+
+  isRuntimeAlive(threadId: string): boolean {
+    return this.runtimes.get(threadId)?.alive ?? false
+  }
+
+  /**
+   * 活跃会话的用量快照：向运行中的引擎请求 `get_session_stats`，
+   * 用于「使用情况」页校验会话总量与展示上下文占用。不支持该命令的
+   * 引擎（或进程未运行）返回 null。
+   */
+  async getSessionUsageSnapshot(threadId: string): Promise<ContextUsageInfo | null> {
+    const runtime = this.runtimes.get(threadId)
+    if (!runtime?.alive) return null
+    try {
+      const res = await runtime.sendCommand({ type: 'get_session_stats' }, 8_000)
+      const data = res.data && typeof res.data === 'object' && !Array.isArray(res.data)
+        ? (res.data as Record<string, unknown>)
+        : null
+      return data ? parseContextUsage(data.contextUsage) ?? null : null
+    } catch {
+      return null
+    }
+  }
+
+  /** 指定引擎在项目目录下的运行中会话状态（MCP 生效判断）。 */
+  getEngineSessionState(engine: 'pi' | 'omp' | 'prime', projectPath: string | null): { hasLiveSession: boolean; startedAt: number | null } {
+    for (const [threadId, runtime] of this.runtimes) {
+      if (!runtime.alive) continue
+      const thread = this.store.snapshot().threads.find((t) => t.id === threadId)
+      if (!thread || thread.harness !== engine) continue
+      if (projectPath && thread.cwd !== projectPath) continue
+      return { hasLiveSession: true, startedAt: runtime.startedAt }
+    }
+    return { hasLiveSession: false, startedAt: null }
   }
 
   async removeThread(threadId: string): Promise<void> {

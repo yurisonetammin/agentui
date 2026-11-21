@@ -182,3 +182,108 @@
   .settings-engine-layout { grid-template-columns: 130px minmax(0, 1fr); gap: 10px; }
   .settings-shortcuts { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ── MCP / 插件 / 技能 / 使用情况 / 浏览器 ─────────────────────────── */
+
+.settings-extensions-page { display: grid; gap: 12px; }
+.settings-extensions-page .settings-engine-heading { gap: 12px; }
+.ext-server-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-root);
+}
+.ext-server-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  text-align: left;
+  padding: 0;
+}
+.ext-server-copy { min-width: 0; display: grid; gap: 3px; flex: 1; }
+.ext-server-copy > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+.ext-server-copy strong { font-weight: 650; }
+.ext-server-copy small { color: var(--text-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.ext-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ext-badge.managed { background: var(--accent-soft); color: var(--accent); }
+.ext-badge.is-shadow { background: var(--bg-hover); color: var(--text-muted); }
+.ext-badge.is-error { background: rgba(248, 113, 113, 0.14); color: var(--danger); }
+.ext-endpoint {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ext-server-detail { grid-column: 1 / -1; padding-top: 6px; border-top: 1px dashed var(--border); }
+.ext-source-list { display: grid; gap: 6px; }
+.ext-source-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.ext-add-form { display: grid; gap: 10px; padding: 10px; border: 1px dashed var(--border-strong); border-radius: var(--radius-small); }
+.ext-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.ext-form-grid label { display: grid; gap: 4px; font-size: 12px; color: var(--text-secondary); min-width: 0; }
+.ext-form-grid input, .ext-form-grid select { width: 100%; min-width: 0; }
+.ext-raw {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-code);
+  border-radius: var(--radius-small);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ext-skill-search { max-width: 260px; }
+.ext-skill-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ext-skill-preview {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  padding: 4px 14px;
+  background: var(--bg-root);
+}
+.ext-usage-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.ext-usage-filters label { display: grid; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.ext-usage-filters input, .ext-usage-filters select { width: 100%; min-width: 0; }
+.ext-usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+.ext-browser-notes { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--text-secondary); font-size: 12.5px; }
+.ext-browser-notes kbd { padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 4px; font-size: 11px; }
+.settings-meta-pair { display: contents; }
+.ext-confirm-panel { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--accent); border-radius: var(--radius-small); background: var(--accent-soft); }

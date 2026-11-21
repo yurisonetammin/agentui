@@ -1,6 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
-import { Activity, Check, ChevronRight, CircleAlert, Cpu, FolderOpen, Keyboard, Monitor, RefreshCw, Search, Shield } from 'lucide-react'
+import {
+  Activity,
+  AppWindow,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Cpu,
+  FolderOpen,
+  Gauge,
+  Keyboard,
+  Monitor,
+  Puzzle,
+  RefreshCw,
+  Search,
+  Server,
+  Shield,
+  Sparkles,
+} from 'lucide-react'
 import { CAPABILITY_LABELS, CAPABILITY_NOTES, HARNESS_CAPABILITIES, type CapabilitySupport } from '@shared/capabilities'
+import {
+  EXTENSION_ENGINE_LABELS,
+  EXTENSION_ENGINES,
+  isExtensionEngine,
+  type ExtensionEngine,
+} from '@shared/extensions'
 import {
   CODE_FONT_SIZES, DEFAULT_APPEARANCE, DEFAULT_HARNESS_SETTINGS, THINKING_LABELS,
   type AppearanceSettings, type ConversationSettings, type HarnessDefaults,
@@ -9,9 +32,15 @@ import type { TrustPreset } from '@shared/tool-policy'
 import { HARNESS_IDS, HARNESS_LABELS, THINKING_LEVELS, type HarnessId, type HarnessStatus, type ModelCatalogResult, type ProjectEntry, type ThinkingLevel } from '@shared/types'
 import { errorText, Segments, SettingsRow } from './SettingsControls'
 import { ConversationPage, DiagnosticsPage, ProjectPermissionsPage } from './SettingsWorkflowPages'
+import { BrowserSettingsPage, McpSettingsPage, PluginsSettingsPage, SkillsSettingsPage, UsageSettingsPage } from './SettingsExtensionsPages'
 
 const SETTINGS_SECTIONS = {
   engines: { label: '引擎与模型', icon: Cpu },
+  mcp: { label: 'MCP 服务器', icon: Server },
+  plugins: { label: '插件', icon: Puzzle },
+  skills: { label: '技能', icon: Sparkles },
+  usage: { label: '使用情况', icon: Gauge },
+  browser: { label: '浏览器', icon: AppWindow },
   appearance: { label: '外观与布局', icon: Monitor },
   conversation: { label: '会话与快捷键', icon: Keyboard },
   projects: { label: '项目与权限', icon: Shield },
@@ -31,6 +60,23 @@ export interface SettingsDestination {
 
 export const SETTINGS_LINKS: Array<SettingsDestination & { label: string; keywords?: string }> = [
   { section: 'engines', label: '引擎与模型', keywords: 'CLI 检测 默认 Thinking' },
+  { section: 'mcp', label: 'MCP 服务器', keywords: 'mcp 服务器 配置 来源 覆盖 stdio http 认证' },
+  ...EXTENSION_ENGINES.map((engine) => ({
+    section: 'mcp' as const, harness: engine,
+    label: `MCP · ${EXTENSION_ENGINE_LABELS[engine]}`, keywords: 'mcp 用户级 项目级 第三方',
+  })),
+  { section: 'plugins', label: '插件', keywords: '插件 包 安装 卸载 更新 plugin package' },
+  ...EXTENSION_ENGINES.map((engine) => ({
+    section: 'plugins' as const, harness: engine,
+    label: `插件 · ${EXTENSION_ENGINE_LABELS[engine]}`, keywords: '安装 卸载 更新 包',
+  })),
+  { section: 'skills', label: '技能', keywords: '技能 skill 预览 插入 斜杠命令 SKILL.md' },
+  ...EXTENSION_ENGINES.map((engine) => ({
+    section: 'skills' as const, harness: engine,
+    label: `技能 · ${EXTENSION_ENGINE_LABELS[engine]}`, keywords: '技能 预览 SKILL.md',
+  })),
+  { section: 'usage', label: '使用情况', keywords: '用量 token 费用 额度 统计 报表 上下文' },
+  { section: 'browser', label: '浏览器', keywords: '浏览器 独立窗口 标签页 分享 登录隔离 ego' },
   ...HARNESS_IDS.map((harness) => ({
     section: 'engines' as const, harness, anchor: 'engine-path',
     label: `${HARNESS_LABELS[harness]} 路径`, keywords: 'CLI 探测 可执行文件',
@@ -72,6 +118,12 @@ interface Props {
   defaults: Partial<Record<HarnessId, HarnessDefaults>>
   catalogs: Partial<Record<HarnessId, ModelCatalogResult>>
   catalogLoading: Partial<Record<HarnessId, boolean>>
+  /** 当前活动会话已注册的斜杠命令名（技能页「会话已加载」标记）。 */
+  sessionCommands: string[]
+  /** 当前活动会话所属引擎：技能页只在引擎一致时才标「会话已加载」。 */
+  sessionEngine: HarnessId | null
+  onInsertToComposer: (text: string) => void
+  onOpenBrowserWindow: () => Promise<void>
   onNavigate: (destination: SettingsDestination) => void
   onSavePath: (id: HarnessId, path: string | null) => Promise<void>
   onRefreshHarnesses: () => Promise<void>
@@ -301,12 +353,37 @@ export function SettingsPage(props: Props) {
   const [comparedDestination, setComparedDestination] = useState<SettingsDestination | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  // MCP / 插件 / 技能共用同一个引擎切换器状态
+  const [extensionEngine, setExtensionEngine] = useState<ExtensionEngine>(
+    () => (isExtensionEngine(props.activeHarness) ? props.activeHarness : 'pi'),
+  )
   const { destination, onNavigate } = props
   const compare = comparedDestination === destination
   const selected = destination.harness ?? props.activeHarness
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean)
   const matches = terms.length ? SETTINGS_LINKS.filter((entry) =>
     terms.every((term) => `${entry.label} ${entry.keywords ?? ''}`.toLowerCase().includes(term))) : []
+
+  const extensionHarnesses = {
+    pi: { ready: props.harnesses.pi.ready, version: props.harnesses.pi.version },
+    omp: { ready: props.harnesses.omp.ready, version: props.harnesses.omp.version },
+    prime: { ready: props.harnesses.prime.ready, version: props.harnesses.prime.version },
+  }
+
+  function switchExtensionEngine(next: ExtensionEngine) {
+    setExtensionEngine(next)
+    if (destination.section === 'mcp' || destination.section === 'plugins' || destination.section === 'skills') {
+      onNavigate({ ...destination, harness: next })
+    }
+  }
+
+  // 从设置搜索 / 命令面板跳转到「MCP · OMP」等带引擎的入口时，切换器跟随目标引擎
+  useEffect(() => {
+    if ((destination.section === 'mcp' || destination.section === 'plugins' || destination.section === 'skills')
+      && isExtensionEngine(destination.harness)) {
+      setExtensionEngine(destination.harness)
+    }
+  }, [destination])
 
   useEffect(() => { searchRef.current?.focus() }, [])
   useEffect(() => {
@@ -372,6 +449,15 @@ export function SettingsPage(props: Props) {
           {destination.section === 'projects' && <ProjectPermissionsPage projects={props.projects} activeProjectId={props.activeProjectId}
             defaultPreset={props.defaultProjectTrust} onSaveProject={props.onSaveProjectTrust} onSaveDefault={props.onSaveDefaultProjectTrust} />}
           {destination.section === 'diagnostics' && <DiagnosticsPage />}
+          {destination.section === 'mcp' && <McpSettingsPage engine={extensionEngine} onEngineChange={switchExtensionEngine}
+            projects={props.projects} activeProjectId={props.activeProjectId} harnesses={extensionHarnesses} />}
+          {destination.section === 'plugins' && <PluginsSettingsPage engine={extensionEngine} onEngineChange={switchExtensionEngine}
+            projects={props.projects} activeProjectId={props.activeProjectId} harnesses={extensionHarnesses} />}
+          {destination.section === 'skills' && <SkillsSettingsPage engine={extensionEngine} onEngineChange={switchExtensionEngine}
+            projects={props.projects} activeProjectId={props.activeProjectId} harnesses={extensionHarnesses}
+            sessionEngine={props.sessionEngine} sessionCommands={props.sessionCommands} onInsertToComposer={props.onInsertToComposer} />}
+          {destination.section === 'usage' && <UsageSettingsPage projects={props.projects} />}
+          {destination.section === 'browser' && <BrowserSettingsPage onOpenBrowserWindow={props.onOpenBrowserWindow} />}
           {destination.section === 'engines' && <>
             <div className="settings-page-heading settings-engine-heading">
               <div><h1>引擎与模型</h1><p>查看本机 CLI，配置启动路径和新会话默认值。</p></div>

@@ -46,6 +46,8 @@ function isRecord(value: unknown): value is RpcObject {
 
 export class RpcRuntime {
   readonly runtimeId = randomUUID()
+  /** 进程启动时刻，用于判断配置文件是否在会话启动后被修改。 */
+  readonly startedAt = Date.now()
   private readonly child: ChildProcessWithoutNullStreams
   private readonly decoder: StrictJsonlDecoder
   private readonly chunks: RpcChunkAssembler

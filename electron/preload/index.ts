@@ -1,17 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AgentUiApi,
+  BrowserWinTabInfo,
   CreateThreadInput,
   ExtensionUiRequest,
   ExtensionUiResponse,
   ForkThreadInput,
   HarnessId,
+  McpAddInput,
   SendPromptInput,
+  SharePayloadKind,
+  ShareToComposerEvent,
   ThinkingLevel,
   ThreadEntry,
   ThreadEventEnvelope,
   ThreadStatusUpdate,
+  UsageFilters,
 } from '@shared/types'
+import type { ExtensionEngine } from '@shared/extensions'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   const listener = (_event: Electron.IpcRendererEvent, payload: T) => cb(payload)
@@ -88,6 +94,45 @@ const api: AgentUiApi = {
   onExtensionUiRequest: (cb: (req: ExtensionUiRequest) => void) => subscribe('agentui:extensionUiRequest', cb),
   onTerminalOutput: (cb) => subscribe('agentui:terminalOutput', cb),
   onTerminalExit: (cb) => subscribe('agentui:terminalExit', cb),
+
+  // ── 设置：MCP / 插件 / 技能 / 使用情况 ──
+  getEngineMcp: (engine: ExtensionEngine, projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:getMcp', engine, projectPath ?? null),
+  mcpAddServer: (input: McpAddInput, projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:mcpAdd', input, projectPath ?? null),
+  mcpRemoveServer: (engine: ExtensionEngine, scope: 'user' | 'project', name: string, projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:mcpRemove', engine, scope, name, projectPath ?? null),
+  mcpCheckLive: (engine: ExtensionEngine, projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:mcpCheckLive', engine, projectPath ?? null),
+  getEnginePackages: (engine: ExtensionEngine, projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:getPackages', engine, projectPath ?? null),
+  packageInstall: (engine: ExtensionEngine, source: string, scope: 'user' | 'project', projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:packageInstall', engine, source, scope, projectPath ?? null),
+  packageRemove: (engine: ExtensionEngine, name: string, scope: 'user' | 'project', projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:packageRemove', engine, name, scope, projectPath ?? null),
+  packageUpdate: (engine: ExtensionEngine, name: string | null, scope: 'user' | 'project', projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:packageUpdate', engine, name ?? null, scope, projectPath ?? null),
+  getEngineSkills: (engine: ExtensionEngine, projectPath?: string | null) =>
+    ipcRenderer.invoke('ext:getSkills', engine, projectPath ?? null),
+  readSkillFile: (filePath: string) => ipcRenderer.invoke('ext:readSkill', filePath),
+  getUsageReport: (filters?: UsageFilters, refresh?: boolean) =>
+    ipcRenderer.invoke('usage:getReport', filters ?? {}, refresh === true),
+
+  // ── 独立浏览器窗口 ──
+  browserWindowShow: () => ipcRenderer.invoke('browserWin:show'),
+  browserWindowIsOpen: () => ipcRenderer.invoke('browserWin:isOpen'),
+  browserWinCreateTab: (url?: string) => ipcRenderer.invoke('browserWin:createTab', url) as Promise<BrowserWinTabInfo[]>,
+  browserWinCloseTab: (tabId: string) => ipcRenderer.invoke('browserWin:closeTab', tabId) as Promise<BrowserWinTabInfo[]>,
+  browserWinActivateTab: (tabId: string) => ipcRenderer.invoke('browserWin:activateTab', tabId) as Promise<BrowserWinTabInfo[]>,
+  browserWinNavigate: (url: string) => ipcRenderer.invoke('browserWin:navigate', url) as Promise<BrowserWinTabInfo[]>,
+  browserWinGoBack: () => ipcRenderer.invoke('browserWin:back') as Promise<BrowserWinTabInfo[]>,
+  browserWinGoForward: () => ipcRenderer.invoke('browserWin:forward') as Promise<BrowserWinTabInfo[]>,
+  browserWinReload: () => ipcRenderer.invoke('browserWin:reload') as Promise<BrowserWinTabInfo[]>,
+  browserWinStop: () => ipcRenderer.invoke('browserWin:stop') as Promise<BrowserWinTabInfo[]>,
+  browserWinSetInsets: (top: number) => ipcRenderer.invoke('browserWin:setInsets', top),
+  browserWinShare: (target: { threadId: string; kind: SharePayloadKind }) => ipcRenderer.invoke('browserWin:share', target),
+  onBrowserWinTabs: (cb: (tabs: BrowserWinTabInfo[]) => void) => subscribe('agentui:browserWinTabs', cb),
+  onShareToComposer: (cb: (event: ShareToComposerEvent) => void) => subscribe('agentui:shareToComposer', cb),
 }
 
 contextBridge.exposeInMainWorld('agentui', api)

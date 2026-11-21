@@ -1,5 +1,48 @@
 import type { AppearanceSettings, ConversationSettings, HarnessDefaults } from './settings'
 import type { AppDiagnostics } from './diagnostics'
+import type {
+  AccountQuota,
+  EnginePackageSnapshot,
+  EngineSkillSnapshot,
+  ExtensionEngine,
+  McpAddInput,
+  McpEngineSnapshot,
+  UsageFilters,
+  UsageReport,
+} from './extensions'
+
+export type { McpAddInput, UsageFilters, ExtensionEngine }
+
+// ---------------------------------------------------------------------------
+// 独立浏览器窗口 + 分享到会话
+// ---------------------------------------------------------------------------
+
+export interface BrowserWinTabInfo {
+  id: string
+  title: string
+  url: string
+  isLoading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  active: boolean
+  favicon?: string
+}
+
+export type SharePayloadKind = 'link' | 'text' | 'image'
+
+export interface ShareToThreadInput {
+  kind: SharePayloadKind
+  url?: string
+  title?: string
+  text?: string
+  imageData?: string
+  mimeType?: string
+  fromUrl?: string
+}
+
+export interface ShareToComposerEvent extends ShareToThreadInput {
+  threadId: string
+}
 
 export type HarnessId = 'pi' | 'omp' | 'prime' | 'claude' | 'codex' | 'acp' | 'dsh'
 
@@ -496,4 +539,33 @@ export interface AgentUiApi {
   onThreadEvent(cb: (envelope: ThreadEventEnvelope) => void): () => void
   onThreadStatus(cb: (update: ThreadStatusUpdate) => void): () => void
   onExtensionUiRequest(cb: (req: ExtensionUiRequest) => void): () => void
+
+  // ── 设置：MCP / 插件 / 技能 / 使用情况 ──
+  getEngineMcp(engine: ExtensionEngine, projectPath?: string | null): Promise<McpEngineSnapshot>
+  mcpAddServer(input: McpAddInput, projectPath?: string | null): Promise<McpEngineSnapshot>
+  mcpRemoveServer(engine: ExtensionEngine, scope: 'user' | 'project', name: string, projectPath?: string | null): Promise<McpEngineSnapshot>
+  mcpCheckLive(engine: ExtensionEngine, projectPath?: string | null): Promise<McpEngineSnapshot>
+  getEnginePackages(engine: ExtensionEngine, projectPath?: string | null): Promise<EnginePackageSnapshot>
+  packageInstall(engine: ExtensionEngine, source: string, scope: 'user' | 'project', projectPath?: string | null): Promise<EnginePackageSnapshot>
+  packageRemove(engine: ExtensionEngine, name: string, scope: 'user' | 'project', projectPath?: string | null): Promise<EnginePackageSnapshot>
+  packageUpdate(engine: ExtensionEngine, name: string | null, scope: 'user' | 'project', projectPath?: string | null): Promise<EnginePackageSnapshot>
+  getEngineSkills(engine: ExtensionEngine, projectPath?: string | null): Promise<EngineSkillSnapshot>
+  readSkillFile(filePath: string): Promise<{ path: string; content: string; truncated: boolean }>
+  getUsageReport(filters?: UsageFilters, refresh?: boolean): Promise<UsageReport>
+
+  // ── 独立浏览器窗口 ──
+  browserWindowShow(): Promise<void>
+  browserWindowIsOpen(): Promise<boolean>
+  browserWinCreateTab(url?: string): Promise<BrowserWinTabInfo[]>
+  browserWinCloseTab(tabId: string): Promise<BrowserWinTabInfo[]>
+  browserWinActivateTab(tabId: string): Promise<BrowserWinTabInfo[]>
+  browserWinNavigate(url: string): Promise<BrowserWinTabInfo[]>
+  browserWinGoBack(): Promise<BrowserWinTabInfo[]>
+  browserWinGoForward(): Promise<BrowserWinTabInfo[]>
+  browserWinReload(): Promise<BrowserWinTabInfo[]>
+  browserWinStop(): Promise<BrowserWinTabInfo[]>
+  browserWinSetInsets(top: number): Promise<void>
+  browserWinShare(target: { threadId: string; kind: SharePayloadKind }): Promise<void>
+  onBrowserWinTabs(cb: (tabs: BrowserWinTabInfo[]) => void): () => void
+  onShareToComposer(cb: (event: ShareToComposerEvent) => void): () => void
 }

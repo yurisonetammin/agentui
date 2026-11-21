@@ -48,6 +48,7 @@ import {
   type ProjectEntry,
   type RuntimeDisconnectInfo,
   type SessionTreeSnapshot,
+  type ShareToComposerEvent,
   type SlashCommandDescriptor,
   type ThinkingLevel,
   type ThreadEntry,
@@ -79,6 +80,13 @@ const CONVERSATION_WIDTHS = { standard: '820px', wide: '1040px', full: 'none' } 
 const COMPACT_TRUST_LABELS: Record<TrustPreset, string> = {
   readonly: '只读', approval: '需审批', auto: '自动',
 }
+
+interface ComposerDraft {
+  text: string
+  images: ImageAttachment[]
+}
+
+const EMPTY_COMPOSER_DRAFT: ComposerDraft = { text: '', images: [] }
 
 function panelWidthLimit(viewportWidth: number) {
   return Math.max(MIN_PANEL_WIDTH, Math.min(680, viewportWidth - 650))
@@ -186,9 +194,9 @@ export function App() {
   const [dismissedDisconnectAt, setDismissedDisconnectAt] = useState<Record<string, number>>({})
   const [showDisconnectDetails, setShowDisconnectDetails] = useState(false)
   const [reconnectingThreadId, setReconnectingThreadId] = useState<string | null>(null)
-  const [promptText, setPromptText] = useState('')
+  const [composerDrafts, setComposerDrafts] = useState(() => new Map<string | null, ComposerDraft>())
+  const { text: promptText, images: attachedImages } = composerDrafts.get(activeThreadId) ?? EMPTY_COMPOSER_DRAFT
   const [composerCursor, setComposerCursor] = useState(0)
-  const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
   const [previewImage, setPreviewImage] = useState<ImageAttachment | null>(null)
   const [dragOverComposer, setDragOverComposer] = useState(false)
   const [fileSuggestions, setFileSuggestions] = useState<WorkspaceFileEntry[]>([])
@@ -211,6 +219,34 @@ export function App() {
   const sendMenuRef = useRef<HTMLDetailsElement>(null)
   const creatingDraftThreadRef = useRef(false)
   const panelDragRef = useRef<{ x: number; width: number } | null>(null)
+
+  const updateComposerDraft = useCallback((threadId: string | null, update: (draft: ComposerDraft) => ComposerDraft) => {
+    setComposerDrafts((drafts) => {
+      const next = new Map(drafts)
+      const draft = update(drafts.get(threadId) ?? EMPTY_COMPOSER_DRAFT)
+      if (draft.text || draft.images.length) next.set(threadId, draft)
+      else next.delete(threadId)
+      return next
+    })
+  }, [])
+
+  function setPromptText(text: string | ((previous: string) => string)) {
+    updateComposerDraft(activeThreadId, (draft) => ({ ...draft, text: typeof text === 'string' ? text : text(draft.text) }))
+  }
+
+  function setAttachedImages(update: (images: ImageAttachment[]) => ImageAttachment[]) {
+    updateComposerDraft(activeThreadId, (draft) => ({ ...draft, images: update(draft.images) }))
+  }
+
+  const reportError = useCallback((error: unknown) => {
+    setActionError(error instanceof Error ? error.message : String(error))
+  }, [])
+
+  const selectThread = useCallback((threadId: string) => {
+    setActionError(null)
+    setActiveThreadId(threadId)
+    void window.agentui.setActiveThread(threadId).catch(reportError)
+  }, [reportError])
 
   const activeThread = useMemo(
     () => threads.find((t) => t.id === activeThreadId) ?? null,
@@ -423,8 +459,50 @@ export function App() {
 
   useEffect(() => {
     setShowDisconnectDetails(false)
-    setAttachedImages([])
   }, [activeThreadId])
+
+  // 独立浏览器「分享到会话」：内容填入目标会话的输入框，由用户确认后发送
+  useEffect(() => {
+    return window.agentui.onShareToComposer((event: ShareToComposerEvent) => {
+      selectThread(event.threadId)
+      if (event.kind === 'image') {
+        if (!event.imageData || !event.mimeType) return
+        if ((composerDrafts.get(event.threadId)?.images.length ?? 0) >= MAX_IMAGES_PER_PROMPT) {
+          setActionError(`分享失败：单条消息最多附加 ${MAX_IMAGES_PER_PROMPT} 张图片`)
+          return
+        }
+        const sizeBytes = Math.floor(event.imageData.length * 0.75) - (event.imageData.match(/=+$/)?.[0].length ?? 0)
+        if (sizeBytes > MAX_IMAGE_BYTES) {
+          setActionError('分享失败：截图超过 10MB 限制')
+          return
+        }
+        const stamp = new Date().toLocaleTimeString().replace(/:/g, '')
+        const shared: ImageAttachment = {
+          id: `share-${crypto.randomUUID()}`,
+          type: 'image' as const,
+          data: event.imageData,
+          mimeType: event.mimeType,
+          name: `shared-${stamp}.png`,
+          sizeBytes,
+        }
+        updateComposerDraft(event.threadId, (draft) => ({
+          ...draft,
+          images: [...draft.images, shared].slice(0, MAX_IMAGES_PER_PROMPT),
+        }))
+      } else {
+        const text = event.kind === 'link'
+          ? `[${event.title || event.url}](${event.url})`
+          : `${event.text ?? ''}\n\n（来自网页：${event.fromUrl ?? ''}）`
+        updateComposerDraft(event.threadId, (draft) => ({ ...draft, text: draft.text ? `${draft.text}\n\n${text}` : text }))
+        requestAnimationFrame(() => {
+          const end = composerRef.current?.value.length ?? 0
+          setComposerCursor(end)
+          composerRef.current?.setSelectionRange(end, end)
+          composerRef.current?.focus()
+        })
+      }
+    })
+  }, [composerDrafts, selectThread, updateComposerDraft])
 
   useEffect(() => {
     if (!activeThread) {
@@ -554,15 +632,31 @@ export function App() {
     )
   }
 
-  function reportError(error: unknown) {
-    setActionError(error instanceof Error ? error.message : String(error))
-  }
-
   function openSettings(destination?: SettingsDestination) {
     if (!showSettings) settingsReturnFocus.current = document.activeElement as HTMLElement | null
     if (destination) setSettingsDestination(destination)
     setShowShortcuts(false)
     setShowSettings(true)
+  }
+
+  async function openBrowserWindow() {
+    try {
+      await window.agentui.browserWindowShow()
+    } catch (err) {
+      reportError(err)
+    }
+  }
+
+  /** 技能页「插入输入框」：写入 Composer 并回到工作台。 */
+  function insertToComposer(text: string) {
+    setPromptText((prev) => (prev ? `${prev}${text} ` : `${text} `))
+    setShowSettings(false)
+    requestAnimationFrame(() => {
+      const end = composerRef.current?.value.length ?? 0
+      setComposerCursor(end)
+      composerRef.current?.setSelectionRange(end, end)
+      composerRef.current?.focus()
+    })
   }
 
   function closeSettings() {
@@ -610,12 +704,6 @@ export function App() {
     void loadModelCatalog(harness, true)
   }
 
-  function selectThread(threadId: string) {
-    setActionError(null)
-    setActiveThreadId(threadId)
-    void window.agentui.setActiveThread(threadId).catch(reportError)
-  }
-
   function startDraft(projectId = activeProject?.id ?? activeProjectId) {
     setActionError(null)
     setShowDisconnectDetails(false)
@@ -625,9 +713,8 @@ export function App() {
       setActiveHarness(effectiveHarness)
       void window.agentui.setActiveHarness(effectiveHarness).catch(reportError)
     }
-    setPromptText('')
+    updateComposerDraft(null, () => EMPTY_COMPOSER_DRAFT)
     setComposerCursor(0)
-    setAttachedImages([])
     setDraftModel(null)
     setDraftThinking(null)
     void window.agentui.setActiveThread(null).catch(reportError)
@@ -789,12 +876,13 @@ export function App() {
     const items = await window.agentui.getThreadTimeline(result.thread.id)
     setTimelines((prev) => ({ ...prev, [result.thread.id]: items }))
     setShowForkModal(false)
-    if (result.prefillText) {
-      setPromptText(result.prefillText)
-      setComposerCursor(result.prefillText.length)
+    const prefillText = result.prefillText
+    if (prefillText) {
+      updateComposerDraft(result.thread.id, (draft) => ({ ...draft, text: prefillText }))
+      setComposerCursor(prefillText.length)
       requestAnimationFrame(() => {
         composerRef.current?.focus()
-        composerRef.current?.setSelectionRange(result.prefillText!.length, result.prefillText!.length)
+        composerRef.current?.setSelectionRange(prefillText.length, prefillText.length)
       })
     }
   }
@@ -886,9 +974,8 @@ export function App() {
     const msg = promptText
     const imagesToSend = attachedImages
     const displayText = msg.trim() || (imagesToSend.length > 0 ? '请查看附带的图片' : '')
-    setPromptText('')
+    updateComposerDraft(activeThreadId, () => EMPTY_COMPOSER_DRAFT)
     setComposerCursor(0)
-    setAttachedImages([])
     setAcDismissedKey(null)
 
     if (!isStreaming) {
@@ -1028,6 +1115,7 @@ export function App() {
       id: tab, label: `打开${label}面板`, keywords: tab, group: '工作区', run: () => openWorkspaceTab(tab),
     })),
     { id: 'terminal-dock', label: '打开底部终端', keywords: 'terminal dock', group: '工作区', run: dockTerminal },
+    { id: 'browser-window', label: '打开独立浏览器', keywords: 'browser web 浏览器 网页', group: '工作区', run: () => void openBrowserWindow() },
     { id: 'new-draft', label: '新建会话', group: '会话', run: () => startDraft() },
     { id: 'add-project', label: '添加项目', group: '工作区', run: () => void handleAddProject() },
     ...settingsEntries,
@@ -1197,6 +1285,7 @@ export function App() {
         cwd={effectiveCwd} context={currentCtxUsage} statusText={currentStatusText}
         activeTool={showDiffPanel ? diffPanelTab : null} terminalDocked={terminalDocked}
         onToggleTool={toggleWorkspaceTool} onOpenPalette={() => setShowPalette(true)}
+        onOpenBrowserWindow={() => void openBrowserWindow()}
         onCloseSettings={showSettings ? closeSettings : undefined}
         onFork={() => void openForkModal('tree')}
         onCompact={() => {
@@ -1226,6 +1315,7 @@ export function App() {
               .then(() => {
                 setProjects((prev) => prev.filter((p) => p.id !== id))
                 setThreads((prev) => prev.filter((t) => t.projectId !== id))
+                setComposerDrafts((drafts) => new Map([...drafts].filter(([threadId]) => threadId === null || !removedIds.has(threadId))))
                 setPendingUiQueue((prev) => prev.filter((item) => !removedIds.has(item.threadId)))
                 if (activeThreadId && removedIds.has(activeThreadId)) setActiveThreadId(null)
                 if (activeProjectId === id) setActiveProjectId(projects.find((project) => project.id !== id)?.id ?? null)
@@ -1240,6 +1330,7 @@ export function App() {
               .deleteThread(tid)
               .then(() => {
                 setThreads((prev) => prev.filter((t) => t.id !== tid))
+                updateComposerDraft(tid, () => EMPTY_COMPOSER_DRAFT)
                 setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, tid))
                 if (activeThreadId === tid) setActiveThreadId(null)
               })
@@ -1685,6 +1776,9 @@ export function App() {
         <SettingsPage destination={settingsDestination} appearance={appearance} activeHarness={effectiveHarness}
           conversation={conversation} projects={projects} activeProjectId={activeProject?.id ?? null} defaultProjectTrust={defaultProjectTrust}
           harnesses={harnesses} customPaths={customPaths} defaults={harnessDefaults} catalogs={catalogs} catalogLoading={catalogLoading}
+          sessionCommands={slashCommands.map((cmd) => cmd.name)}
+          sessionEngine={activeThread?.harness ?? activeHarness}
+          onInsertToComposer={insertToComposer} onOpenBrowserWindow={openBrowserWindow}
           onNavigate={setSettingsDestination} onSavePath={saveEnginePath} onRefreshHarnesses={refreshHarnessSettings}
           onRefreshCatalog={(id) => loadModelCatalog(id, true)} onSaveDefaults={saveHarnessDefaults} onSaveAppearance={saveAppearance}
           onSaveConversation={saveConversation} onSaveProjectTrust={saveProjectTrust} onSaveDefaultProjectTrust={saveDefaultProjectTrust} />

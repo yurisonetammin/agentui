@@ -17,14 +17,20 @@ import {
   type ThreadEntry,
 } from '@shared/types'
 import { isTrustPreset } from '@shared/tool-policy'
+import { isExtensionEngine, type ExtensionEngine, type McpAddInput, type UsageFilters } from '@shared/extensions'
 import type { HarnessDiscoveryService } from './discovery'
 import type { BrowserCompanionService } from './browser-companion'
+import type { BrowserWindowService } from './browser-window-service'
+import type { EngineMcpService } from './extensions/mcp-service'
+import type { EnginePackageService } from './extensions/package-service'
+import type { EngineSkillService } from './extensions/skill-service'
 import type { GitService } from './git/git-service'
 import type { ModelCatalogService } from './model-catalog'
 import type { RuntimeManager } from './rpc/manager'
 import { scanCliSessions } from './sessions/catalog'
 import type { StateStore } from './store'
 import type { TerminalService } from './terminal-service'
+import type { UsageService } from './usage-service'
 import type { WorkspaceBrowserService } from './workspace-browser'
 import type { WorkspaceFileService } from './workspace-files'
 
@@ -37,10 +43,18 @@ export function registerIpcHandlers(deps: {
   workspaceFiles: WorkspaceFileService
   workspaceBrowser: WorkspaceBrowserService
   browserCompanion: BrowserCompanionService
+  browserWindow: BrowserWindowService
+  engineMcp: EngineMcpService
+  enginePackages: EnginePackageService
+  engineSkills: EngineSkillService
+  usage: UsageService
   terminal: TerminalService
   runtimeManager: RuntimeManager
 }): void {
-  const { getWindow, store, discovery, models, git, workspaceFiles, workspaceBrowser, browserCompanion, terminal, runtimeManager } = deps
+  const {
+    getWindow, store, discovery, models, git, workspaceFiles, workspaceBrowser,
+    browserCompanion, browserWindow, engineMcp, enginePackages, engineSkills, usage, terminal, runtimeManager,
+  } = deps
   const pendingPathUpdates = new Map<HarnessId, symbol>()
 
   ipcMain.handle('app:getState', () => store.snapshot())
@@ -401,4 +415,55 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle('git:commit', (_e, cwd: string, message: string) => git.commit(cwd, message))
   ipcMain.handle('git:createWorktree', (_e, repoPath: string, branchName: string, baseRef?: string) => git.createWorktree(repoPath, branchName, baseRef))
   ipcMain.handle('git:removeWorktree', (_e, repoPath: string, worktreePath: string, force?: boolean) => git.removeWorktree(repoPath, worktreePath, force))
+
+  // ── 设置：MCP / 插件 / 技能 / 使用情况 ─────────────────────────────────
+  const validProjectPath = (projectPath?: string | null): string | null => {
+    if (typeof projectPath !== 'string' || !projectPath.trim()) return null
+    const abs = resolve(projectPath.trim())
+    return existsSync(abs) && statSync(abs).isDirectory() ? abs : null
+  }
+  const asEngine = (engine: unknown): ExtensionEngine => {
+    if (!isExtensionEngine(engine)) throw new Error('无效的引擎（仅支持 Pi / OMP / Prime）')
+    return engine
+  }
+
+  ipcMain.handle('ext:getMcp', (_e, engine: unknown, projectPath?: string | null) => engineMcp.getSnapshot(asEngine(engine), validProjectPath(projectPath)))
+  ipcMain.handle('ext:mcpAdd', async (_e, input: McpAddInput, projectPath?: string | null) => {
+    if (!input || typeof input !== 'object') throw new Error('无效的添加请求')
+    const engine = asEngine(input.engine)
+    const snapshot = await engineMcp.addServer(input, validProjectPath(projectPath))
+    return snapshot
+  })
+  ipcMain.handle('ext:mcpRemove', (_e, engine: unknown, scope: string, name: string, projectPath?: string | null) => {
+    if (scope !== 'user' && scope !== 'project') throw new Error('无效的作用范围')
+    return engineMcp.removeServer(asEngine(engine), scope, String(name), validProjectPath(projectPath))
+  })
+  ipcMain.handle('ext:mcpCheckLive', (_e, engine: unknown, projectPath?: string | null) => engineMcp.getSnapshot(asEngine(engine), validProjectPath(projectPath), true))
+
+  ipcMain.handle('ext:getPackages', (_e, engine: unknown, projectPath?: string | null) => enginePackages.getSnapshot(asEngine(engine), validProjectPath(projectPath)))
+  ipcMain.handle('ext:packageInstall', (_e, engine: unknown, source: string, scope: string, projectPath?: string | null) => {
+    if (scope !== 'user' && scope !== 'project') throw new Error('无效的作用范围')
+    return enginePackages.install(asEngine(engine), String(source), scope, validProjectPath(projectPath))
+  })
+  ipcMain.handle('ext:packageRemove', (_e, engine: unknown, name: string, scope: string, projectPath?: string | null) => {
+    if (scope !== 'user' && scope !== 'project') throw new Error('无效的作用范围')
+    return enginePackages.remove(asEngine(engine), String(name), scope, validProjectPath(projectPath))
+  })
+  ipcMain.handle('ext:packageUpdate', (_e, engine: unknown, name: string | null, scope: string, projectPath?: string | null) => {
+    if (scope !== 'user' && scope !== 'project') throw new Error('无效的作用范围')
+    return enginePackages.update(asEngine(engine), name === null ? null : String(name), scope, validProjectPath(projectPath))
+  })
+
+  ipcMain.handle('ext:getSkills', (_e, engine: unknown, projectPath?: string | null) => engineSkills.getSnapshot(asEngine(engine), validProjectPath(projectPath)))
+  ipcMain.handle('ext:readSkill', (_e, filePath: string) => engineSkills.readSkillFile(String(filePath)))
+
+  ipcMain.handle('usage:getReport', (_e, filters?: UsageFilters, refresh?: boolean) => {
+    if (filters !== undefined && (filters === null || typeof filters !== 'object' || Array.isArray(filters))) {
+      throw new Error('无效的筛选条件')
+    }
+    return usage.getReport(filters ?? {}, refresh === true)
+  })
+
+  // 独立浏览器窗口的 browserWin:* 路由由 BrowserWindowService.register() 自行注册。
+  void browserWindow
 }
