@@ -1,6 +1,6 @@
 import { constants as fsConstants } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { parseHarnessVersion } from '../electron/main/discovery'
+import { HarnessDiscoveryService, parseHarnessVersion } from '../electron/main/discovery'
 import { harnessChildEnvironment, prepareExecutableSpawn } from '../electron/main/process-utils'
 
 describe('Windows shim resolution & version parsing', () => {
@@ -9,6 +9,16 @@ describe('Windows shim resolution & version parsing', () => {
     expect(parseHarnessVersion('omp/18.18.9\n')).toBe('18.18.9')
     expect(parseHarnessVersion('0.10.3\n')).toBe('0.10.3')
     expect(parseHarnessVersion('2.1.325 (Claude Code)\n')).toBe('2.1.325')
+  })
+
+  it('tests only the supplied executable without replacing the discovered state', async () => {
+    const discovery = new HarnessDiscoveryService()
+    discovery.applyProbe({ ...discovery.snapshot().pi, path: process.execPath, ready: true })
+    const invalid = await discovery.probe('pi', 'missing-pi')
+    expect(invalid).toMatchObject({ path: null, ready: false })
+    const valid = await discovery.probe('pi', process.execPath)
+    expect(valid).toMatchObject({ path: process.execPath, version: process.versions.node, ready: true })
+    expect(discovery.snapshot().pi).toMatchObject({ path: process.execPath, ready: true, version: null })
   })
 
   it('resolves managed pi.cmd via install/current-version directly to node + cli.js', () => {

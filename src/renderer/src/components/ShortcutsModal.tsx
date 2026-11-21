@@ -1,9 +1,14 @@
 import { Keyboard, X } from 'lucide-react'
-import { SHORTCUT_HINTS } from '@shared/shortcuts'
+import type { ConversationSettings } from '@shared/settings'
+import { shortcutHints } from '@shared/shortcuts'
 
-export function ShortcutsModal({ onClose }: { onClose: () => void }) {
-  const globalHints = SHORTCUT_HINTS.filter((h) => h.scope === 'global')
-  const composerHints = SHORTCUT_HINTS.filter((h) => h.scope === 'composer')
+export function ShortcutsModal({ enterWhileRunning, onClose }: {
+  enterWhileRunning: ConversationSettings['enterWhileRunning']
+  onClose: () => void
+}) {
+  const hints = shortcutHints(enterWhileRunning)
+  const globalHints = hints.filter((h) => h.scope === 'global')
+  const composerHints = hints.filter((h) => h.scope === 'composer')
 
   return (
     <div className="modal-backdrop" onClick={onClose}>

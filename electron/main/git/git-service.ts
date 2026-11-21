@@ -1,24 +1,88 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import type { GitFileChange, GitStatusSummary, GitWorktreeInfo } from '@shared/types'
+import type { GitFileChange, GitStatusSummary, GitTurnChanges, GitWorktreeInfo } from '@shared/types'
 import { isPathInside, resolveGitExecutable, restrictedGitEnvironment, runProcess } from '../process-utils'
+
+export interface GitTurnCapture {
+  finish: () => Promise<{ changes: GitTurnChanges; diff: string | null }>
+  discard: () => Promise<void>
+}
 
 export class GitService {
   private readonly gitExe = resolveGitExecutable()
 
-  private async execGit(cwd: string, args: string[], timeoutMs = 15_000): Promise<string> {
+  private async execGit(cwd: string, args: string[], timeoutMs = 15_000, env = restrictedGitEnvironment()): Promise<string> {
     const res = await runProcess(this.gitExe, args, {
       cwd,
-      env: restrictedGitEnvironment(),
+      env,
       timeoutMs,
       maxBytes: 8 * 1024 * 1024,
       resolveHarnessShim: false,
     })
     if (res.timedOut) throw new Error(`git ${args[0]} 超时`)
+    if (res.outputExceeded) throw new Error(`git ${args[0]} 输出超出限制`)
     if (res.code !== 0) {
       throw new Error(res.stderr.trim() || res.stdout.trim() || `git ${args[0]} failed (${res.code})`)
     }
     return res.stdout
+  }
+
+  async beginTurn(cwd: string): Promise<GitTurnCapture> {
+    const [root, realObjects] = await Promise.all([
+      this.execGit(cwd, ['rev-parse', '--show-toplevel'], 3_000),
+      this.execGit(cwd, ['rev-parse', '--path-format=absolute', '--git-path', 'objects'], 3_000),
+    ])
+    const repoRoot = root.trim()
+    const directory = await mkdtemp(join(tmpdir(), 'agentui-turn-'))
+    const objects = join(directory, 'objects')
+    const hooks = join(directory, 'hooks')
+    const discard = () => rm(directory, { recursive: true, force: true })
+
+    try {
+      await Promise.all([mkdir(join(objects, 'info'), { recursive: true }), mkdir(hooks)])
+      // Store the index and any new Git objects outside the repository.
+      await writeFile(join(objects, 'info', 'alternates'), `${realObjects.trim()}\n`)
+      const env = { ...restrictedGitEnvironment(), GIT_INDEX_FILE: join(directory, 'index'), GIT_OBJECT_DIRECTORY: objects }
+      const configKeys = await this.execGit(repoRoot, ['config', '-z', '--name-only', '--list'], 3_000)
+      const filterKeys = configKeys.split('\0').filter((key) => /^filter\..+\.(clean|process|required)$/i.test(key))
+      const options = ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false', '-c', 'core.splitIndex=false']
+      // A preview should not invoke project-configured clean filters or hooks.
+      for (const key of new Set(filterKeys)) {
+        options.push('-c', `${key}=${key.toLowerCase().endsWith('.required') ? 'false' : ''}`)
+      }
+      const run = (args: string[]) => this.execGit(repoRoot, [...options, ...args], 5_000, env)
+      const head = await run(['rev-parse', '--verify', 'HEAD']).then((value) => value.trim()).catch(() => null)
+      await run(head ? ['read-tree', head] : ['read-tree', '--empty'])
+      async function snapshot() {
+        await run(['--literal-pathspecs', 'add', '--all', '--', '.'])
+        return (await run(['write-tree'])).trim()
+      }
+      const before = await snapshot()
+      return {
+        discard,
+        async finish() {
+          try {
+            const after = await snapshot()
+            if (before === after) return { changes: { files: 0, added: 0, removed: 0 }, diff: null }
+            const flags = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--find-renames']
+            const [numstat, patch] = await Promise.all([
+              run([...flags, '--numstat', '-z', before, after]),
+              run([...flags, '--patch', before, after]).catch(() => null),
+            ])
+            const preview = patch?.slice(0, 350_000).split('\n', 4_000).join('\n')
+            const diff = preview && preview.length < (patch?.length ?? 0) ? `${preview}\n[其余差异已省略]` : preview ?? null
+            return { changes: parseTurnNumstat(numstat), diff }
+          } finally {
+            await discard()
+          }
+        },
+      }
+    } catch (error) {
+      await discard()
+      throw error
+    }
   }
 
   async getStatus(cwd: string): Promise<GitStatusSummary> {
@@ -151,6 +215,21 @@ export class GitService {
     args.push(worktreePath)
     await this.execGit(repoPath, args)
   }
+}
+
+function parseTurnNumstat(output: string): GitTurnChanges {
+  const entries = output.split('\0')
+  const summary = { files: 0, added: 0, removed: 0 }
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index].match(/^(\d+|-)\t(\d+|-)\t/)
+    if (!entry) continue
+    summary.files += 1
+    summary.added += Number(entry[1]) || 0
+    summary.removed += Number(entry[2]) || 0
+    // Renames have an empty name followed by two NUL-delimited paths.
+    if (entries[index].length === entry[0].length) index += 2
+  }
+  return summary
 }
 
 export function parsePorcelainStatusZ(output: string): {

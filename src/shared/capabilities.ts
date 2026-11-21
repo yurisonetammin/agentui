@@ -128,7 +128,7 @@ export const CAPABILITY_LABELS: { key: keyof HarnessCapabilities; label: string 
   { key: 'thinking', label: 'Thinking 档位' },
   { key: 'modelSwitch', label: '模型热切换' },
   { key: 'fork', label: '分叉 / 分支树' },
-  { key: 'extensionUi', label: '审批弹窗' },
+  { key: 'extensionUi', label: '内嵌审批' },
   { key: 'contextStats', label: '上下文统计' },
   { key: 'historyReplay', label: '历史回放' },
   { key: 'images', label: '图片输入' },

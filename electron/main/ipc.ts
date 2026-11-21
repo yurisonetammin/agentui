@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
+import { release } from 'node:os'
 import { basename, resolve } from 'node:path'
-import { dialog, ipcMain, type BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, nativeTheme, type BrowserWindow } from 'electron'
+import type { AppDiagnostics } from '@shared/diagnostics'
+import { normalizeAppearance, normalizeConversation, normalizeHarnessDefaults, type AppearanceSettings, type ConversationSettings, type HarnessDefaults } from '@shared/settings'
 import {
   HARNESS_IDS,
   type CreateThreadInput,
@@ -38,23 +41,102 @@ export function registerIpcHandlers(deps: {
   runtimeManager: RuntimeManager
 }): void {
   const { getWindow, store, discovery, models, git, workspaceFiles, workspaceBrowser, browserCompanion, terminal, runtimeManager } = deps
+  const pendingPathUpdates = new Map<HarnessId, symbol>()
 
   ipcMain.handle('app:getState', () => store.snapshot())
+
+  ipcMain.handle('app:getDiagnostics', async (_e, refresh?: boolean): Promise<AppDiagnostics> => {
+    const [harnesses, browserStatus] = await Promise.all([
+      refresh === true ? discovery.refresh(store.snapshot().customBinaryPaths) : discovery.snapshot(),
+      browserCompanion.getStatus(refresh === true).catch(() => null),
+    ])
+    const browserMcpCount = browserStatus?.mcpServers.filter((server) => server.browserLike).length ?? 0
+    return {
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: release(),
+      harnesses,
+      startupIssues: runtimeManager.getStartupIssues(),
+      browser: browserStatus ? {
+        available: browserStatus.ego.available,
+        version: browserStatus.ego.version,
+        browserMcpCount,
+        otherMcpCount: browserStatus.mcpServers.length - browserMcpCount,
+      } : null,
+      checkedAt: Date.now(),
+    }
+  })
 
   ipcMain.handle('harnesses:discover', async (_e, refresh?: boolean) => {
     if (refresh === false) return discovery.snapshot()
     return discovery.refresh(store.snapshot().customBinaryPaths)
   })
 
+  ipcMain.handle('harnesses:testPath', (_e, harness: HarnessId, binaryPath: string) => {
+    if (!HARNESS_IDS.includes(harness) || typeof binaryPath !== 'string') throw new Error('无效的引擎或路径')
+    return discovery.probe(harness, binaryPath.trim())
+  })
+
   ipcMain.handle('harnesses:setCustomPath', async (_e, harness: HarnessId, binaryPath: string | null) => {
+    if (!HARNESS_IDS.includes(harness) || (binaryPath !== null && typeof binaryPath !== 'string')) {
+      throw new Error('无效的引擎或路径')
+    }
+    const path = binaryPath?.trim() || undefined
+    const update = Symbol()
+    pendingPathUpdates.set(harness, update)
+    try {
+      const status = await discovery.probe(harness, path)
+      if (path && !status.ready) throw new Error(status.error ?? '路径检测失败')
+      if (pendingPathUpdates.get(harness) !== update) throw new Error('已有更新的路径操作')
+      store.mutate((draft) => {
+        if (path) draft.customBinaryPaths[harness] = path
+        else delete draft.customBinaryPaths[harness]
+      })
+      return discovery.applyProbe(status)
+    } finally {
+      if (pendingPathUpdates.get(harness) === update) pendingPathUpdates.delete(harness)
+    }
+  })
+
+  ipcMain.handle('settings:setAppearance', (_e, patch: Partial<AppearanceSettings>) => {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('无效的外观设置')
+    const appearance = normalizeAppearance({ ...store.snapshot().appearance, ...patch })
+    if (Object.entries(patch).some(([key, value]) => appearance[key as keyof AppearanceSettings] !== value)) {
+      throw new Error('无效的外观设置')
+    }
+    store.mutate((draft) => { draft.appearance = appearance })
+    nativeTheme.themeSource = appearance.theme
+    return appearance
+  })
+
+  ipcMain.handle('settings:setConversation', (_e, patch: Partial<ConversationSettings>) => {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('无效的会话设置')
+    const conversation = normalizeConversation({ ...store.snapshot().conversation, ...patch })
+    if (Object.entries(patch).some(([key, value]) => conversation[key as keyof ConversationSettings] !== value)) {
+      throw new Error('无效的会话设置')
+    }
+    store.mutate((draft) => { draft.conversation = conversation })
+    return conversation
+  })
+
+  ipcMain.handle('settings:setDefaultProjectTrust', (_e, preset: unknown) => {
+    if (!isTrustPreset(preset)) throw new Error('无效的新项目权限预设')
+    return store.mutate((draft) => { draft.defaultProjectTrust = preset }).defaultProjectTrust
+  })
+
+  ipcMain.handle('settings:setHarnessDefaults', (_e, harness: HarnessId, input: HarnessDefaults) => {
+    if (!HARNESS_IDS.includes(harness) || !input || typeof input !== 'object') throw new Error('无效的引擎设置')
+    const defaults = normalizeHarnessDefaults(input)
+    if ((input.model !== null && !defaults.model) || input.thinkingLevel !== defaults.thinkingLevel) {
+      throw new Error('无效的默认模型或 Thinking 档位')
+    }
     store.mutate((draft) => {
-      if (!binaryPath || !binaryPath.trim()) {
-        delete draft.customBinaryPaths[harness]
-      } else {
-        draft.customBinaryPaths[harness] = binaryPath.trim()
-      }
+      if (defaults.model || defaults.thinkingLevel) draft.harnessDefaults[harness] = defaults
+      else delete draft.harnessDefaults[harness]
     })
-    return discovery.refresh(store.snapshot().customBinaryPaths)
+    return defaults
   })
 
   ipcMain.handle('harnesses:setActive', (_e, harness: HarnessId) => {
@@ -76,12 +158,20 @@ export function registerIpcHandlers(deps: {
     return res.filePaths[0]
   })
 
+  ipcMain.handle('dialog:pickExecutable', async () => {
+    const win = getWindow()
+    const options: Electron.OpenDialogOptions = { title: '选择 CLI 可执行文件', properties: ['openFile'] }
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
+
   ipcMain.handle('projects:add', (_e, dirPath: string) => {
     const abs = resolve(dirPath.trim())
     if (!existsSync(abs) || !statSync(abs).isDirectory()) {
       throw new Error(`目录不存在: ${abs}`)
     }
-    const existing = store.snapshot().projects.find((p) => p.path.toLowerCase() === abs.toLowerCase())
+    const state = store.snapshot()
+    const existing = state.projects.find((p) => p.path.toLowerCase() === abs.toLowerCase())
     if (existing) {
       store.mutate((draft) => {
         draft.activeProjectId = existing.id
@@ -93,8 +183,8 @@ export function registerIpcHandlers(deps: {
       name: basename(abs) || abs,
       path: abs,
       addedAt: Date.now(),
-      defaultHarness: store.snapshot().activeHarness,
-      trustPreset: 'approval' as const,
+      defaultHarness: state.activeHarness,
+      trustPreset: state.defaultProjectTrust,
     }
     store.mutate((draft) => {
       draft.projects.push(project)
@@ -144,6 +234,8 @@ export function registerIpcHandlers(deps: {
     if (!project) throw new Error('所属项目不存在')
     const cwd = input.cwd ? resolve(input.cwd) : project.path
     if (!existsSync(cwd)) throw new Error(`工作目录不存在: ${cwd}`)
+    const defaults = input.sessionPath ? undefined : state.harnessDefaults[input.harness]
+    const hasModelOverride = input.modelId !== undefined || input.modelProvider !== undefined
 
     const now = Date.now()
     const thread: ThreadEntry = {
@@ -156,9 +248,9 @@ export function registerIpcHandlers(deps: {
       sessionPath: input.sessionPath ?? null,
       parentThreadId: input.parentThreadId ?? null,
       forkedFromEntryId: input.forkedFromEntryId ?? null,
-      modelProvider: input.modelProvider ?? null,
-      modelId: input.modelId ?? null,
-      thinkingLevel: input.thinkingLevel ?? 'medium',
+      modelProvider: (hasModelOverride ? input.modelProvider : defaults?.model?.provider) ?? null,
+      modelId: (hasModelOverride ? input.modelId : defaults?.model?.id) ?? null,
+      thinkingLevel: input.thinkingLevel ?? defaults?.thinkingLevel ?? 'medium',
       createdAt: now,
       updatedAt: now,
       status: 'idle',
@@ -195,10 +287,12 @@ export function registerIpcHandlers(deps: {
       const target = draft.threads.find((t) => t.id === threadId)
       if (!target) return
       if (typeof patch.title === 'string') target.title = patch.title
-      if (patch.harness && !target.sessionPath && target.status === 'idle' && runtimeManager.getTimeline(threadId).length === 0) {
+      if (patch.harness && patch.harness !== target.harness && !target.sessionPath && target.status === 'idle' && runtimeManager.getTimeline(threadId).length === 0) {
         target.harness = patch.harness
-        target.modelProvider = null
-        target.modelId = null
+        const defaults = draft.harnessDefaults[patch.harness]
+        target.modelProvider = defaults?.model?.provider ?? null
+        target.modelId = defaults?.model?.id ?? null
+        target.thinkingLevel = defaults?.thinkingLevel ?? 'medium'
         draft.activeHarness = patch.harness
       }
       if (patch.modelProvider !== undefined) target.modelProvider = patch.modelProvider
@@ -213,6 +307,10 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle('threads:getTimeline', (_e, threadId: string) => {
     return runtimeManager.getTimeline(threadId)
+  })
+
+  ipcMain.handle('threads:getTurnDiff', (_e, threadId: string, summaryId: string) => {
+    return runtimeManager.getTurnDiff(threadId, summaryId)
   })
 
   ipcMain.handle('threads:sendPrompt', (_e, input: SendPromptInput) => {
@@ -271,6 +369,7 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle('browser:spaces', () => browserCompanion.listSpaces())
   ipcMain.handle('browser:tabs', () => browserCompanion.listTabs())
   ipcMain.handle('browser:open', (_e, url: string) => browserCompanion.openUrl(url))
+  ipcMain.handle('browser:activateTab', (_e, label: string) => browserCompanion.activateTab(label))
   ipcMain.handle('browser:screenshot', () => browserCompanion.screenshot())
 
   ipcMain.handle('threads:getCommands', (_e, threadId: string) => {

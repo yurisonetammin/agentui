@@ -12,9 +12,12 @@ function extractText(node: ReactNode): string {
 
 function CodePre({ children, ...props }: ComponentPropsWithoutRef<'pre'>) {
   const [copied, setCopied] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const raw = extractText(children).replace(/\n$/, '')
+  const lines = raw.split('\n').length
+  const foldable = lines > 12
 
   function handleCopy() {
-    const raw = extractText(children).replace(/\n$/, '')
     if (!raw || !navigator.clipboard?.writeText) return
     void navigator.clipboard
       .writeText(raw)
@@ -31,7 +34,10 @@ function CodePre({ children, ...props }: ComponentPropsWithoutRef<'pre'>) {
         {copied ? <Check size={11} /> : <Copy size={11} />}
         <span>{copied ? '已复制' : '复制'}</span>
       </button>
-      <pre {...props}>{children}</pre>
+      <pre {...props} className={foldable && !expanded ? 'code-preview' : undefined}>{children}</pre>
+      {foldable && <button type="button" className="output-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+        {expanded ? '收起代码' : `展开全部 ${lines.toLocaleString()} 行`}
+      </button>}
     </div>
   )
 }
@@ -41,9 +47,9 @@ const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
 }
 
-export function MarkdownView({ content }: { content: string }) {
+export function MarkdownView({ content, streaming = false }: { content: string; streaming?: boolean }) {
   return (
-    <div className="markdown-body">
+    <div className={`markdown-body${streaming ? ' is-streaming' : ''}`} aria-busy={streaming || undefined}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {content}
       </ReactMarkdown>

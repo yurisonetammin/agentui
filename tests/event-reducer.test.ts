@@ -84,7 +84,7 @@ describe('applyRpcEventToTimeline', () => {
     if (notice.role === 'notice') {
       expect(notice.kind).toBe('error')
       expect(notice.text).toContain('意外退出')
-      expect(notice.text).toContain('OOM')
+      expect(notice.details).toContain('OOM')
     }
   })
 
@@ -93,6 +93,18 @@ describe('applyRpcEventToTimeline', () => {
     items = applyRpcEventToTimeline(items, { type: 'agent_start' }, 2)
     items = applyRpcEventToTimeline(items, { type: 'runtime_exit', code: 0, signal: null, unexpected: false }, 3)
     expect(items).toHaveLength(1)
+  })
+
+  it('places a late Git summary before the next turn and ignores duplicate delivery', () => {
+    const items: TimelineItem[] = [
+      { id: 'first', role: 'user', text: 'first turn', timestamp: 10 },
+      { id: 'second', role: 'user', text: 'second turn', timestamp: 30 },
+    ]
+    const change = { type: 'git_turn_summary', id: 'turn-summary', endedAt: 20, files: 2, added: 3, removed: 1 }
+    const withSummary = applyRpcEventToTimeline(items, change, 35)
+    expect(withSummary.map((item) => item.id)).toEqual(['first', 'turn-summary', 'second'])
+    expect(withSummary[1]).toMatchObject({ role: 'change-summary', changes: { files: 2, added: 3, removed: 1 } })
+    expect(applyRpcEventToTimeline(withSummary, change, 40)).toBe(withSummary)
   })
 
   it('extracts image attachments from user message_start and deduplicates optimistic user bubbles', () => {

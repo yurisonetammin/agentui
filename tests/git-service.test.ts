@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -54,5 +54,40 @@ describe('GitService', () => {
     await git.removeWorktree(repo, wt.path, false)
     const statusAfterRemove = await git.getStatus(repo)
     expect(statusAfterRemove.worktrees.length).toBe(1)
+  })
+
+  it('compares a turn with its dirty starting point without changing the real index', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'agentui-git-turn-test-'))
+    tempDirs.push(repo)
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
+    run(['init', '-b', 'main'])
+    run(['config', 'user.email', 'test@example.com'])
+    run(['config', 'user.name', 'Test User'])
+    writeFileSync(join(repo, 'tracked.txt'), 'committed\n')
+    writeFileSync(join(repo, 'rename-me.txt'), 'unchanged content\n')
+    run(['add', '.'])
+    run(['commit', '-m', 'initial'])
+
+    writeFileSync(join(repo, 'tracked.txt'), 'committed\npre-existing\n')
+    run(['add', 'tracked.txt'])
+    writeFileSync(join(repo, '.gitattributes'), 'tracked.txt filter=fixture\n')
+    run(['config', 'filter.fixture.clean', 'exit 55'])
+    run(['config', 'filter.fixture.required', 'true'])
+    writeFileSync(join(repo, 'existing-untracked.txt'), 'kept\n')
+    const indexBefore = readFileSync(join(repo, '.git', 'index'))
+    const git = new GitService()
+    const turn = await git.beginTurn(repo)
+    try {
+      writeFileSync(join(repo, 'tracked.txt'), 'committed\nreplacement\n')
+      writeFileSync(join(repo, 'new.txt'), 'line one\nline two\n')
+      renameSync(join(repo, 'rename-me.txt'), join(repo, 'renamed.txt'))
+      const result = await turn.finish()
+      expect(result.changes).toEqual({ files: 3, added: 3, removed: 1 })
+      expect(result.diff).toContain('-pre-existing')
+      expect(result.diff).not.toContain('existing-untracked.txt')
+      expect(readFileSync(join(repo, '.git', 'index'))).toEqual(indexBefore)
+    } finally {
+      await turn.discard()
+    }
   })
 })

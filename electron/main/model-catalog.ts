@@ -87,19 +87,21 @@ function normalizeModelEntry(raw: unknown): ModelDescriptor | null {
 }
 
 export class ModelCatalogService {
-  private readonly cache = new Map<HarnessId, ModelCatalogResult>()
+  private readonly cache = new Map<HarnessId, { source: string; catalog: ModelCatalogResult }>()
 
   constructor(private readonly discovery: HarnessDiscoveryService) {}
 
   async getCatalog(harness: HarnessId, refresh = false): Promise<ModelCatalogResult> {
+    const status = this.discovery.snapshot()[harness]
+    const source = JSON.stringify([status.path, status.agentDir, status.version])
+    const cached = this.cache.get(harness)
+    const sameSource = cached?.source === source ? cached.catalog : undefined
     if (!refresh) {
-      const cached = this.cache.get(harness)
-      if (cached && Date.now() - cached.fetchedAt < 120_000) return cached
+      if (sameSource && Date.now() - sameSource.fetchedAt < 120_000 && status.ready) return sameSource
     }
 
-    const status = this.discovery.snapshot()[harness]
     const executable = status.path
-    if (!executable) {
+    if (!executable || !status.ready) {
       return {
         harness,
         models: [],
@@ -141,13 +143,15 @@ export class ModelCatalogService {
         fetchedAt: Date.now(),
         warning: warning ?? (models.length === 0 ? `未检测到已配置凭证的模型（请先在终端用 ${harness} 登录或配置 API Key）` : undefined),
       }
-      this.cache.set(harness, result)
+      const current = this.discovery.snapshot()[harness]
+      if (JSON.stringify([current.path, current.agentDir, current.version]) === source) {
+        this.cache.set(harness, { source, catalog: result })
+      }
       return result
     } catch (err) {
-      const stale = this.cache.get(harness)
       const message = err instanceof Error ? err.message : String(err)
-      if (stale) {
-        return { ...stale, warning: `模型刷新失败，已使用缓存 (${message})` }
+      if (sameSource) {
+        return { ...sameSource, warning: `模型刷新失败，已使用缓存 (${message})` }
       }
       return {
         harness,

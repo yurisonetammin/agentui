@@ -357,11 +357,11 @@ export class AcpBridge implements ProtocolBridge {
       }
       this.permissions.set(id, { options, rawId: rawId as number | string })
       const rawInput = isRecord(toolCall.rawInput) ? toolCall.rawInput : null
+      const command = rawInput ? asString(rawInput.command) ?? asString(rawInput.cmd) : undefined
       let inputText = ''
       if (rawInput) {
-        const cmd = asString(rawInput.command) ?? asString(rawInput.cmd)
         const path = asString(rawInput.file_path) ?? asString(rawInput.path)
-        if (cmd) inputText = cmd
+        if (command) inputText = command
         else if (path) inputText = path
         else {
           try {
@@ -378,6 +378,7 @@ export class AcpBridge implements ProtocolBridge {
         method: 'select',
         title: `${this.options.engineLabel} 请求权限`,
         message: inputText ? `${head}\n${inputText}` : head,
+        command,
         options: options.map((o) => o.name),
       })
       return

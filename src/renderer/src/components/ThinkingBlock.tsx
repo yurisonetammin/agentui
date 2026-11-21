@@ -11,7 +11,7 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming?: b
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Brain size={13} color="#9aa7bd" />
           <span>{streaming ? '正在思考...' : '思考过程'}</span>
-          <span style={{ color: '#68768f', fontFamily: 'var(--mono)', fontSize: 10.5 }}>
+          <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 12.5 }}>
             {lines} 行 · {text.length} 字符
           </span>
         </span>

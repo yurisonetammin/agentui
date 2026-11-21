@@ -23,7 +23,7 @@ import {
 
 const RESULT_MARKER = 'AGENTUI_BROWSER_RESULT:'
 const SPACE_NAME = 'agentui-workbench'
-const BROWSER_MCP_PATTERN = /browser|playwright|puppeteer|chrome|chromium|ego|browsermcp|browser-use/i
+const BROWSER_MCP_PATTERN = /browser|playwright|puppeteer|chrome|chromium|\bego\b|ego-|browsermcp|browser-use/i
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024
 const STATUS_CACHE_MS = 60_000
 
@@ -55,41 +55,65 @@ function normalizeServerEntry(
 }
 
 /** Minimal TOML reader for Codex `[mcp_servers.<name>]` sections (command/args/url only). */
+function tomlStrings(text: string): string[] {
+  return [...text.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g)].map((m) =>
+    m[1] !== undefined ? m[1].replace(/\\(["\\])/g, '$1').replace(/\\n/g, '\n') : (m[2] ?? ''),
+  )
+}
+
 function parseCodexMcpToml(source: string, content: string): BrowserMcpServer[] {
   const servers: BrowserMcpServer[] = []
   let current: { name: string; command?: string; args?: string[]; url?: string } | null = null
+  let inSubTable = false
   const flush = () => {
     if (current && (current.command || current.url)) {
       servers.push({ source, ...current, browserLike: isBrowserLikeMcp(current) })
     }
     current = null
+    inSubTable = false
   }
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim()
+  const lines = content.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim()
     if (!line || line.startsWith('#')) continue
-    const section = line.match(/^\[mcp_servers\.([^\]]+)\]$/)
-    if (section) {
-      flush()
-      current = { name: section[1].replace(/^"(.*)"$/, '$1') }
-      continue
-    }
     if (line.startsWith('[')) {
-      flush()
+      const header = line.match(/^\[\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([^.\]\s]+))(\.[^\]]*)?\]\s*(?:#.*)?$/)
+      if (header) {
+        const name = header[1] ?? header[2] ?? header[3]
+        if (header[4]) {
+          // Sub-table such as [mcp_servers.foo.env]: keep the server, ignore its keys.
+          if ((current as { name: string } | null)?.name === name) inSubTable = true
+          else {
+            flush()
+            current = { name }
+            inSubTable = true
+          }
+        } else {
+          flush()
+          current = { name }
+        }
+      } else {
+        flush()
+      }
       continue
     }
-    if (!current) continue
-    const kv = line.match(/^(command|args|url)\s*=\s*(.+)$/)
+    if (!current || inSubTable) continue
+    const kv = line.match(/^(command|args|url)\s*=\s*(.*)$/)
     if (!kv) continue
     const key = kv[1]
-    const value = kv[2].trim()
+    let value = kv[2].trim()
     if (key === 'args') {
-      const items = [...value.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\"/g, '"'))
-      current.args = items
+      // Arrays may span several lines; gather until brackets balance.
+      while (!/\]\s*(#.*)?$/.test(value) && i + 1 < lines.length) {
+        i += 1
+        value += ` ${lines[i].trim()}`
+      }
+      current.args = tomlStrings(value.replace(/^\[|\]\s*(#.*)?$/g, ''))
     } else {
-      const str = value.match(/^"((?:[^"\\]|\\.)*)"/)
-      if (str) {
-        if (key === 'command') current.command = str[1]
-        else current.url = str[1]
+      const [str] = tomlStrings(value)
+      if (str !== undefined) {
+        if (key === 'command') current.command = str
+        else current.url = str
       }
     }
   }
@@ -98,7 +122,13 @@ function parseCodexMcpToml(source: string, content: string): BrowserMcpServer[] 
 }
 
 /** Parse MCP config files (Claude / project .mcp.json / Gemini JSON, Codex TOML). Pure & testable. */
-export function parseMcpConfigFiles(files: readonly McpConfigFile[]): BrowserMcpServer[] {
+export function parseMcpConfigFiles(
+  files: readonly McpConfigFile[],
+  /** When given, only `~/.claude.json` project entries for these paths are listed. */
+  projectPaths?: readonly string[],
+): BrowserMcpServer[] {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const allowed = projectPaths ? new Set(projectPaths.map(norm)) : null
   const servers: BrowserMcpServer[] = []
   for (const file of files) {
     if (file.kind === 'toml') {
@@ -124,16 +154,17 @@ export function parseMcpConfigFiles(files: readonly McpConfigFile[]): BrowserMcp
     // ~/.claude.json also nests per-project servers under projects[path].mcpServers
     if (root.projects && typeof root.projects === 'object') {
       for (const [projectPath, proj] of Object.entries(root.projects as Record<string, unknown>)) {
+        if (allowed && !allowed.has(norm(projectPath))) continue
         if (proj && typeof proj === 'object') {
           collect((proj as Record<string, unknown>).mcpServers, `${file.source} (${projectPath})`)
         }
       }
     }
   }
-  // Dedupe by name+command/url, keep first occurrence.
+  // Dedupe by name + command/url + args, keep first occurrence.
   const seen = new Set<string>()
   return servers.filter((s) => {
-    const key = `${s.name}|${s.command ?? ''}|${s.url ?? ''}`
+    const key = `${s.name}|${s.command ?? ''}|${s.url ?? ''}|${(s.args ?? []).join(' ')}`
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -173,7 +204,19 @@ const task = !entry
     : entry.ownership === 'agentDelegatedToUser'
       ? await takeOverTaskSpace(entry.id)
       : await taskSpace(entry.id);
-let page = (await task.pages())[0];
+// Prefer the page that is the active tab (what the user is looking at) over pages[0].
+let page;
+{
+  const pageList = await task.pages();
+  const tabList = await task.tabs();
+  const activeTab = tabList.find((t) => t.active);
+  if (activeTab) {
+    for (const p of pageList) {
+      try { if ((await p.url()) === activeTab.url) { page = p; break; } } catch {}
+    }
+  }
+  page = page ?? pageList[0];
+}
 if (!page) {
   const tabs = await task.tabs();
   page = tabs[0] ? await task.adopt(tabs[0].page) : await task.newPage();
@@ -183,6 +226,8 @@ if (!page) {
 function emitResult(expr: string): string {
   return `console.log(${JSON.stringify(RESULT_MARKER)} + JSON.stringify(await (${expr})));\n`
 }
+
+const TABS_EXPR = `(async () => (await task.tabs()).map((t) => ({ label: t.label, title: t.title, url: t.url, active: t.active })))()`
 
 export class BrowserCompanionService {
   private egoCache: { status: BrowserEgoStatus; fetchedAt: number } | null = null
@@ -283,7 +328,7 @@ export class BrowserCompanionService {
     for (const projectPath of this.getProjectPaths()) {
       push(join(projectPath, '.mcp.json'), 'json')
     }
-    return parseMcpConfigFiles(files)
+    return parseMcpConfigFiles(files, this.getProjectPaths())
   }
 
   /** Serialize ego-browser script rounds: each invocation is a fresh process sharing one space. */
@@ -406,8 +451,29 @@ export class BrowserCompanionService {
       const script = `${SPACE_PREAMBLE}
 await page.goto(${JSON.stringify(trimmed)});
 await page.waitForLoadState().catch(() => {});
-${emitResult('(async () => ({ url: await page.url(), title: await page.title(), spaceId: task.spaceId }))()')}`
+${emitResult(`(async () => ({ url: await page.url(), title: await page.title(), spaceId: task.spaceId, tabs: await ${TABS_EXPR} }))()`)}`
       return this.runScript<BrowserOpenResult>(script, 90_000)
+    })
+  }
+
+  /** Make the tab with the given label the active one (one script round, returns the fresh tab list). */
+  async activateTab(label: string): Promise<BrowserTabInfo[]> {
+    if (typeof label !== 'string' || !label || label.length > 200) throw new Error('无效的标签页标识')
+    return this.enqueue(async () => {
+      const script = `${SPACE_PREAMBLE}
+const wanted = ${JSON.stringify(label)};
+const tabsNow = await task.tabs();
+const target = tabsNow.find((t) => t.label === wanted);
+if (!target) throw new Error('标签页不存在或已关闭');
+let targetPage;
+for (const p of await task.pages()) {
+  try { if ((await p.url()) === target.url) { targetPage = p; break; } } catch {}
+}
+targetPage = targetPage ?? (await task.adopt(target.page));
+if (typeof targetPage.bringToFront === 'function') await targetPage.bringToFront();
+${emitResult(TABS_EXPR)}`
+      const tabs = await this.runScript<Array<{ label?: string; title: string; url: string; active: boolean }>>(script, 30_000)
+      return tabs.map((t) => ({ label: t.label, title: t.title, url: t.url, active: t.active }))
     })
   }
 

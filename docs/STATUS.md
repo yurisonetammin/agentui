@@ -4,7 +4,7 @@
 
 ## 1. 当前进度总览
 
-- **当前阶段**：**Phase 1 MVP + 第 1 步（图标/快捷键/断线重连）+ 第 2 步（`@file` / `/slash` / 图片粘贴 / 会话分叉对比）+ Phase 2（多协议桥接扩展 + 工作区文件树/终端 + 虚拟滚动）+ Phase 3 第 1/2 项（项目信任与工具权限策略 + ego-browser / 浏览器型 MCP 协同）已全部完成并通过实窗验证**（具体观察指标见第 5 节）。
+- **当前阶段**：**Phase 1 MVP + 第 1 步（图标/快捷键/断线重连）+ 第 2 步（`@file` / `/slash` / 图片粘贴 / 会话分叉对比）+ Phase 2（多协议桥接扩展 + 工作区文件树/终端 + 虚拟滚动）+ Phase 3 第 1/2 项（项目信任与工具权限策略 + ego-browser / 浏览器型 MCP 协同）+ P1 评审修复（Claude/Codex 桥接、信任联动、浏览器标签页、TOML 解析，见 2.7 节）已全部完成并通过实窗验证**（具体观察指标见第 5 节）。
 - **架构路线确认**：
   - 从空项目目录开始构建自主可控的编码工作台；
   - 经环境检查本机无 Rust (`rustc`/`cargo`) 与 MSVC Build Tools (`cl.exe`/`link.exe`) 后，确认采用 **Electron 35 + TypeScript + React 19 + `electron-vite`**（零原生 C++ 插件）。
@@ -53,6 +53,16 @@
 | **浏览器协同服务** | [browser-companion.ts](electron/main/browser-companion.ts), [ipc.ts](electron/main/ipc.ts), [index.ts](electron/main/index.ts), [preload/index.ts](electron/preload/index.ts) | `BrowserCompanionService`：ego-browser 探测（PATH + `~/.local/share/ego/active_version_dir`，`--version` 60s 缓存）；只读扫描 4 类 MCP 配置（`~/.claude.json` 含 per-project、项目 `.mcp.json`、`~/.codex/config.toml` 极简 TOML 段解析、`~/.gemini/settings.json`）并分类浏览器型服务器；快捷控制经临时 `.mjs` + `nodejs -e "await import(...)"` 执行（`shell:false`、超时进程树强杀、串行队列、仅 http(s) URL、`JSON.stringify` 注入），专属 `agentui-workbench` 空间按 ownership 自动 claim/takeOver。新增 `browser:status/spaces/tabs/open/screenshot` 5 个 IPC。 |
 | **浏览器协同面板** | [BrowserPanel.tsx](src/renderer/src/components/BrowserPanel.tsx), [App.tsx](src/renderer/src/App.tsx) | 顶栏「浏览器」按钮打开面板：ego 状态徽标（版本/路径/未安装提示）、浏览器型 MCP 列表（仅状态展示）与非浏览器 MCP 计数、URL 打开、标签页列表刷新、截图一键回贴输入框（遵守 4 张/10MB 图片上限，成功后聚焦 Composer）。 |
 
+## 2.7 P1 评审修复 (2026-11-21)
+
+| 类别 | 变更文件 | 说明 |
+| :--- | :--- | :--- |
+| **Claude 桥接三项修复** | [rpc/bridges/claude.ts](electron/main/rpc/bridges/claude.ts), [rpc/runtime.ts](electron/main/rpc/runtime.ts), [rpc/manager.ts](electron/main/rpc/manager.ts), [App.tsx](src/renderer/src/App.tsx) | ① `prompt/steer/follow_up` 以 `alreadyRunning` 守卫，运行中不再重复发 `agent_start`（compact 走 `compaction_start/end`）；② CLI 发 `control_cancel_request` 撤回审批时桥接器发 `method:'dismiss'` 事件，runtime 转译为 `dismissed:true` 请求、manager 直转渲染端、App 从队列移除卡片，消除取消后弹窗残留；③ `set_model` 经 `pendingModelSwitch` 记录前值，`control_response` 失败时桥接层回滚 `currentModel` 并向规范命令报错。 |
+| **set_model 持久层回滚** | [rpc/manager.ts](electron/main/rpc/manager.ts) | `RuntimeManager.setModel` 乐观写入 store 后若引擎命令失败，恢复原 `modelProvider/modelId` 并 `emitStatus` 通知渲染端，UI 不再显示被拒绝的模型。 |
+| **Codex 信任预设联动与审批清理** | [rpc/bridges/codex.ts](electron/main/rpc/bridges/codex.ts), [rpc/bridge.ts](electron/main/rpc/bridge.ts), [rpc/manager.ts](electron/main/rpc/manager.ts) | `BridgeStartInfo.getTrustPreset()` 每回合读取项目预设：只读观察 → `thread/start` `sandbox:'read-only'` + `turn/start` `sandboxPolicy:{type:'readOnly'}`，其余预设 → `workspaceWrite`；`approvalPolicy:'on-request'` 保证审批经统一策略边界。`turn/started` 去重 `agent_start`；`serverRequest/resolved` 通知与 `turn/completed` 会 dismiss 未决审批卡（中断回合后不残留），已撤销的审批不再回写 JSON-RPC 应答。 |
+| **浏览器活动标签页与切换、openUrl 单轮** | [browser-companion.ts](electron/main/browser-companion.ts), [BrowserPanel.tsx](src/renderer/src/components/BrowserPanel.tsx), [ipc.ts](electron/main/ipc.ts), [preload/index.ts](electron/preload/index.ts), [types.ts](src/shared/types.ts) | `SPACE_PREAMBLE` 优先按 `task.tabs()` 的 active 标记匹配当前活动页（而非 `pages[0]`）；`openUrl` 一轮脚本同时返回 `{url,title,spaceId,tabs}`，面板不再追加第二轮 `browserTabs`；新增 `activateTab(label)`（`bringToFront`，单轮返回新标签列表）与 `browser:activateTab` IPC，标签页行可点击切换并高亮活动页。 |
+| **MCP TOML 解析加固** | [browser-companion.ts](electron/main/browser-companion.ts) | `parseCodexMcpToml` 支持单引号字面量、跨行 `args` 数组（括号配平）、行尾注释、带引号服务器名与 `[mcp_servers.x.env]` 子表（保留服务器、忽略子表键）；`ego` 分类改为词边界匹配避免误伤 `category` 等词。 |
+
 ## 3. 已完成文件清单
 
 - **配置、资源与文档**：`package.json`、`tsconfig.json`、`tsconfig.node.json`、`tsconfig.web.json`、`electron.vite.config.ts`、`vitest.config.ts`、`assets/{icon.ico,icon.png}`、`AGENTS.md`、`README.md`、`docs/PLAN.md`、`docs/STATUS.md`
@@ -60,7 +70,7 @@
 - **主进程 (`electron/main/`)**：`index.ts`、`ipc.ts`、`store.ts`、`discovery.ts`、`model-catalog.ts`、`process-utils.ts`、`workspace-files.ts`、`workspace-browser.ts`、`browser-companion.ts`、`terminal-service.ts`、`git/git-service.ts`、`sessions/catalog.ts`、`rpc/jsonl.ts`、`rpc/chunk-assembly.ts`、`rpc/adapters.ts`、`rpc/bridge.ts`、`rpc/bridges/{claude,codex,acp}.ts`、`rpc/runtime.ts`、`rpc/manager.ts`
 - **预加载 (`electron/preload/`)**：`index.ts`、`index.d.ts`
 - **渲染端 (`src/renderer/`)**：`index.html`、`src/main.tsx`、`src/App.tsx`、`src/styles.css`、`src/assets/brand-icon.png`、`src/components/{Sidebar,ComposerAutocomplete,ForkTreeModal,DiffPanel,WorkspaceFilesPanel,TerminalPanel,MarkdownView,ThinkingBlock,ToolCallCard,ExtensionUiModal,SettingsModal,ShortcutsModal,ProjectTrustModal,BrowserPanel}.tsx`
-- **单元测试 (`tests/`)**：`adapters.test.ts`、`bridges.test.ts`、`browser-companion.test.ts`（含本机装有 ego-browser 时的真实探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例）、`chunk-assembly.test.ts`、`claude-live-handshake.test.ts`（本机装有 Claude CLI 时运行，否则跳过）、`claude-session-catalog.test.ts`、`composer-autocomplete.test.ts`、`event-reducer.test.ts`、`git-service.test.ts`、`jsonl.test.ts`、`process-utils.test.ts`、`shortcuts.test.ts`、`store-and-sessions.test.ts`、`tool-policy.test.ts`、`trust-policy-manager.test.ts`、`ui-queue-and-manager.test.ts`、`workspace-browser-and-terminal.test.ts`、`workspace-files-and-fork.test.ts`
+- **单元测试 (`tests/`)**：`adapters.test.ts`、`bridges.test.ts`、`browser-companion.test.ts`（含本机装有 ego-browser 时的真实探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例）、`chunk-assembly.test.ts`、`claude-live-handshake.test.ts`（本机装有 Claude CLI 时运行，否则跳过）、`claude-session-catalog.test.ts`、`composer-autocomplete.test.ts`、`diagnostics.test.ts`、`event-reducer.test.ts`、`git-service.test.ts`、`jsonl.test.ts`、`p1-fixes.test.ts`（P1 评审修复：桥接去重/审批撤销/set_model 双层回滚/Codex 沙箱联动/TOML 解析）、`process-utils.test.ts`、`security-hardening.test.ts`、`shortcuts.test.ts`、`store-and-sessions.test.ts`、`tool-policy.test.ts`、`trust-policy-manager.test.ts`、`ui-queue-and-manager.test.ts`、`workspace-browser-and-terminal.test.ts`、`workspace-files-and-fork.test.ts`
 
 ## 4. 已踩过的 Windows 环境坑（供后续参考）
 
@@ -103,3 +113,11 @@
 - `npm run build`：通过，CommonJS `out/preload/index.cjs` 4.96 kB（CJS 铁律保持）、renderer 1,687.05 kB。
 - Electron 实窗冒烟（CDP + 隔离 `AGENTUI_STATE_PATH`）：**SMOKE PASS** —— `window.agentui` 挂载 **50 个 IPC 方法**；`addProject` 默认 `trustPreset: 'approval'`，`setProjectTrust('readonly')` 更新并持久化、非法预设被拒、可切回 approval；`browserStatus(true)` 探测 ego 0.6.3.14 可用；重载后侧栏项目盾牌按钮与顶栏「浏览器」按钮均在 DOM 中；Phase 2 各项（工作区/终端/越界防护/7 引擎探测）回归通过。
 - **验证边界**：策略拦截在审批层生效——引擎静默自动执行（不发起审批）时无法拦截，UI 已明示；高风险审批弹窗的红色横幅由单元测试覆盖请求富化（`risk.level/reasons`），未在实窗触发真实引擎高风险审批（避免消耗额度）；MCP 扫描本机当前配置未发现浏览器型服务器（解析逻辑由 fixture 单测覆盖）。
+
+### 5.5 P1 评审修复验证记录 (2026-11-21)
+
+- `npm run typecheck`：通过（node/web 两套 tsconfig 零错误）。
+- `npm test`：通过（**21 个测试文件、166 个用例通过、2 个门控跳过**，耗时约 3.9s）。`p1-fixes.test.ts` 12 例：Claude 运行中 steer/follow_up 不重复 `agent_start`、`control_cancel_request` → dismiss（未知 id 不发）、`set_model` 拒绝后 `get_state` 返回旧模型、compact 只发 compaction 事件；Codex `prompt`+`turn/started` 仅一次 `agent_start`（服务端自发回合仍发）、`serverRequest/resolved`/`turn/completed` dismiss 未决审批且不重复回写、readonly 预设 → `sandbox:'read-only'`+`sandboxPolicy:{type:'readOnly'}` 且预设切换下一回合即生效；`RuntimeManager.setModel` 失败恢复持久化模型并广播状态、成功保留新模型；TOML 多行数组/单引号/子表/引号名、`ego` 词边界、同名不同 args 去重与 claude per-project 过滤。
+- `npm run build`：通过，CommonJS `out/preload/index.cjs` 5.87 kB（CJS 铁律保持）、renderer 1,779.41 kB。
+- Electron 实窗冒烟（CDP + 隔离 `AGENTUI_STATE_PATH`）：**SMOKE PASS** —— `window.agentui` 挂载 **59 个 IPC 方法**（含 `browserActivateTab` / `setProjectTrust`）；信任预设 approval→readonly 持久化、非法预设被拒；`readWorkspaceFile('../../windows/win.ini')` 越界被拒；ego-browser 探测 **v0.6.3.17** 可用、`browserTabs` 单轮返回数组；7 引擎探测 pi/omp/prime/claude 就绪，codex/acp/dsh 本机未安装。
+- **验证边界**：Codex 本机仍未安装 CLI，沙箱联动与审批撤销由单元测试按 app-server v2 协议覆盖，未做真实进程端到端验证；`activateTab` 的 `bringToFront` 行为依赖 ego-browser 页面 API（本机 0.6.3.17），真实多标签切换待用户使用时确认。

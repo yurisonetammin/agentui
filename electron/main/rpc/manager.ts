@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { StartupIssue } from '@shared/diagnostics'
 import { BUILTIN_SLASH_COMMANDS } from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
 import {
@@ -26,6 +27,7 @@ import {
   type TimelineItem,
 } from '@shared/types'
 import type { HarnessDiscoveryService } from '../discovery'
+import type { GitService, GitTurnCapture } from '../git/git-service'
 import { harnessChildEnvironment } from '../process-utils'
 import { createForkedSessionFile, readSessionForkTree, readSessionTimeline } from '../sessions/catalog'
 import type { StateStore } from '../store'
@@ -40,16 +42,21 @@ export interface ManagerListeners {
 }
 
 export class RuntimeManager {
+  private readonly startupIssues: StartupIssue[] = []
   private readonly runtimes = new Map<string, RpcRuntime>()
   private readonly startLocks = new Map<string, Promise<RpcRuntime>>()
   private readonly timelines = new Map<string, TimelineItem[]>()
   private readonly lastPrompts = new Map<string, string>()
   private readonly commandCache = new Map<string, SlashCommandDescriptor[]>()
+  private readonly gitTurns = new Map<string, Promise<GitTurnCapture | null>>()
+  private readonly turnDiffs = new Map<string, { threadId: string; diff: string }>()
+  private readonly finalizingTurns = new Set<Promise<void>>()
 
   constructor(
     private readonly store: StateStore,
     private readonly discovery: HarnessDiscoveryService,
     private readonly listeners: ManagerListeners,
+    private readonly git?: Pick<GitService, 'beginTurn'>,
   ) {}
 
   getLastUserPrompt(threadId: string): string | null {
@@ -63,6 +70,10 @@ export class RuntimeManager {
       }
     }
     return null
+  }
+
+  getStartupIssues(): StartupIssue[] {
+    return structuredClone(this.startupIssues)
   }
 
   getTimeline(threadId: string): TimelineItem[] {
@@ -83,6 +94,46 @@ export class RuntimeManager {
     if (next !== current) {
       this.timelines.set(threadId, next)
     }
+  }
+
+  getTurnDiff(threadId: string, summaryId: string): string | null {
+    const record = this.turnDiffs.get(summaryId)
+    return record?.threadId === threadId ? record.diff : null
+  }
+
+  private beginGitTurn(thread: ThreadEntry): Promise<GitTurnCapture | null> | undefined {
+    const existing = this.gitTurns.get(thread.id)
+    if (existing || !this.git) return existing
+    const pending = this.git.beginTurn(thread.cwd).catch(() => null)
+    this.gitTurns.set(thread.id, pending)
+    return pending
+  }
+
+  private async discardGitTurn(threadId: string): Promise<void> {
+    const pending = this.gitTurns.get(threadId)
+    this.gitTurns.delete(threadId)
+    const capture = await pending
+    await capture?.discard().catch(() => undefined)
+  }
+
+  private finishGitTurn(thread: ThreadEntry): void {
+    const pending = this.gitTurns.get(thread.id)
+    if (!pending) return
+    this.gitTurns.delete(thread.id)
+    const endedAt = Date.now()
+    const finish: Promise<void> = pending.then(async (capture) => {
+      const result = await capture?.finish()
+      if (!result?.changes.files || !this.store.snapshot().threads.some((entry) => entry.id === thread.id)) return
+      const id = `changes-${randomUUID()}`
+      if (result.diff) {
+        this.turnDiffs.set(id, { threadId: thread.id, diff: result.diff })
+        if (this.turnDiffs.size > 24) this.turnDiffs.delete(this.turnDiffs.keys().next().value!)
+      }
+      const event = { type: 'git_turn_summary', id, endedAt, ...result.changes }
+      this.updateTimeline(thread.id, event)
+      this.listeners.onThreadEvent({ threadId: thread.id, harness: thread.harness, event })
+    }).catch(() => undefined).finally(() => { this.finalizingTurns.delete(finish) })
+    this.finalizingTurns.add(finish)
   }
 
   async sendPrompt(input: SendPromptInput): Promise<void> {
@@ -139,11 +190,19 @@ export class RuntimeManager {
     }
 
     const runtime = await this.ensureRuntime(thread)
-    await runtime.sendCommand({
-      type: 'prompt',
-      message,
-      ...(wireImages ? { images: wireImages } : {}),
-    })
+    const baseline = this.beginGitTurn(thread)
+    await baseline
+    if (baseline && this.gitTurns.get(thread.id) !== baseline) return
+    try {
+      await runtime.sendCommand({
+        type: 'prompt',
+        message,
+        ...(wireImages ? { images: wireImages } : {}),
+      })
+    } catch (error) {
+      if (this.gitTurns.get(thread.id) === baseline) await this.discardGitTurn(thread.id)
+      throw error
+    }
   }
 
   async abort(threadId: string): Promise<void> {
@@ -176,6 +235,8 @@ export class RuntimeManager {
   }
 
   async setModel(threadId: string, provider: string, modelId: string): Promise<void> {
+    const before = this.store.snapshot().threads.find((t) => t.id === threadId)
+    const previous = { modelProvider: before?.modelProvider ?? null, modelId: before?.modelId ?? null }
     this.store.mutate((draft) => {
       const t = draft.threads.find((item) => item.id === threadId)
       if (t) {
@@ -186,7 +247,13 @@ export class RuntimeManager {
     })
     const runtime = this.runtimes.get(threadId)
     if (runtime?.alive) {
-      await runtime.sendCommand({ type: 'set_model', provider, modelId }, 15_000)
+      try {
+        await runtime.sendCommand({ type: 'set_model', provider, modelId }, 15_000)
+      } catch (err) {
+        // Engine rejected the switch: restore the persisted model so the UI matches reality.
+        this.emitStatus(threadId, before?.status ?? 'idle', previous)
+        throw err
+      }
     }
   }
 
@@ -382,22 +449,32 @@ export class RuntimeManager {
   }
 
   async stopThread(threadId: string): Promise<void> {
+    const cleanup = this.discardGitTurn(threadId)
     const runtime = this.runtimes.get(threadId)
-    if (!runtime) return
-    this.runtimes.delete(threadId)
-    await runtime.stop()
+    if (runtime) {
+      this.runtimes.delete(threadId)
+      await runtime.stop()
+    }
+    await cleanup
   }
 
   async removeThread(threadId: string): Promise<void> {
     await this.stopThread(threadId)
     this.timelines.delete(threadId)
     this.lastPrompts.delete(threadId)
+    for (const [summaryId, record] of this.turnDiffs) {
+      if (record.threadId === threadId) this.turnDiffs.delete(summaryId)
+    }
   }
 
   async stopAll(): Promise<void> {
     const list = [...this.runtimes.values()]
     this.runtimes.clear()
-    await Promise.allSettled(list.map((r) => r.stop()))
+    await Promise.allSettled([
+      ...list.map((r) => r.stop()),
+      ...Array.from(this.gitTurns.keys(), (threadId) => this.discardGitTurn(threadId)),
+      ...this.finalizingTurns,
+    ])
   }
 
   private getThreadOrThrow(threadId: string): ThreadEntry {
@@ -424,10 +501,19 @@ export class RuntimeManager {
       this.listeners.onExtensionUiRequest(enriched)
     }
 
+    if (req.dismissed) {
+      // Engine withdrew the request: just tell the renderer to drop it.
+      this.listeners.onExtensionUiRequest(req)
+      return
+    }
+
     if (req.method !== 'confirm' && req.method !== 'select') {
       forwardToUser({ ...req, policyPreset: preset })
       return
     }
+
+    const assessment = assessToolRequest(req)
+    const risk = { level: assessment.level, reasons: assessment.reasons, command: assessment.command }
 
     if (req.method === 'select') {
       const opts = req.options ?? []
@@ -436,14 +522,12 @@ export class RuntimeManager {
       const looksLikeApproval =
         pickSelectOption(opts, true) !== undefined || pickSelectOption(opts, false) !== undefined
       if (!looksLikeApproval) {
-        forwardToUser({ ...req, policyPreset: preset })
+        forwardToUser({ ...req, policyPreset: preset, ...(req.command ? { risk } : {}) })
         return
       }
     }
 
-    const assessment = assessToolRequest({ title: req.title, message: req.message })
     const decision = decideApproval(preset, assessment)
-    const risk = { level: assessment.level, reasons: assessment.reasons }
 
     if (decision.action === 'ask') {
       forwardToUser({ ...req, policyPreset: preset, risk })
@@ -482,6 +566,7 @@ export class RuntimeManager {
   }
 
   private emitStatus(threadId: string, status: ThreadEntry['status'], extra: Partial<ThreadStatusUpdate> = {}): void {
+    const updatedAt = Date.now()
     this.store.mutate((draft) => {
       const t = draft.threads.find((item) => item.id === threadId)
       if (t) {
@@ -491,10 +576,10 @@ export class RuntimeManager {
         if (extra.modelProvider !== undefined) t.modelProvider = extra.modelProvider
         if (extra.modelId !== undefined) t.modelId = extra.modelId
         if (extra.thinkingLevel !== undefined) t.thinkingLevel = extra.thinkingLevel
-        t.updatedAt = Date.now()
+        t.updatedAt = updatedAt
       }
     })
-    this.listeners.onThreadStatus({ threadId, status, ...extra })
+    this.listeners.onThreadStatus({ threadId, status, ...extra, updatedAt })
   }
 
   private ensureRuntime(thread: ThreadEntry): Promise<RpcRuntime> {
@@ -504,7 +589,16 @@ export class RuntimeManager {
     const inFlight = this.startLocks.get(thread.id)
     if (inFlight) return inFlight
 
-    const promise = this.startRuntime(thread).finally(() => {
+    const promise = this.startRuntime(thread).catch((error: unknown) => {
+      this.startupIssues.unshift({
+        id: randomUUID(),
+        harness: thread.harness,
+        occurredAt: Date.now(),
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 1500),
+      })
+      if (this.startupIssues.length > 12) this.startupIssues.pop()
+      throw error
+    }).finally(() => {
       this.startLocks.delete(thread.id)
     })
     this.startLocks.set(thread.id, promise)
@@ -556,6 +650,10 @@ export class RuntimeManager {
         onEvent: (event) => {
           this.updateTimeline(thread.id, event)
           this.listeners.onThreadEvent({ threadId: thread.id, harness: thread.harness, event })
+          if (event.type === 'agent_start') this.beginGitTurn(thread)
+          if (event.type === 'agent_end' || event.type === 'agent_settled' || event.type === 'runtime_exit') {
+            this.finishGitTurn(thread)
+          }
         },
         onStateChange: (patch) => {
           const statusExplicit = patch.isStreaming !== undefined || patch.isCompacting !== undefined
@@ -629,6 +727,12 @@ export class RuntimeManager {
             modelId: thread.modelId,
             thinkingLevel: thread.thinkingLevel,
             executablePath: status.path,
+            getTrustPreset: () => {
+              const snap = this.store.snapshot()
+              const owner = snap.threads.find((t) => t.id === thread.id)
+              const proj = owner ? snap.projects.find((p) => p.id === owner.projectId) : undefined
+              return proj?.trustPreset ?? 'approval'
+            },
           }
         : undefined,
     )

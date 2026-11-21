@@ -170,7 +170,7 @@ export function ForkTreeModal({
                     </option>
                   ))}
                 </select>
-                <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
                   从任意历史提问分叉出独立会话，保留原对话便于一题多解对比。
                 </span>
               </div>
@@ -208,12 +208,12 @@ export function ForkTreeModal({
                         <div className="fork-node-prompt">{msg.text}</div>
                         {msg.assistantPreview && (
                           <div className="fork-node-reply">
-                            {msg.model && <span className="mono-chip" style={{ fontSize: 10 }}>{msg.model}</span>}
+                            {msg.model && <span className="mono-chip" style={{ fontSize: 12 }}>{msg.model}</span>}
                             <span>{msg.assistantPreview}</span>
                           </div>
                         )}
                         <div className="fork-node-actions">
-                          <span className="mono-chip" style={{ fontSize: 10 }} title="Session Entry ID">
+                          <span className="mono-chip" style={{ fontSize: 12 }} title="Session Entry ID">
                             {msg.entryId.slice(0, 10)}
                           </span>
                           <div style={{ display: 'flex', gap: 6 }}>

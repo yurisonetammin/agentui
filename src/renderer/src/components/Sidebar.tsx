@@ -1,6 +1,6 @@
-import { useRef, useState, type RefObject } from 'react'
-import { FolderGit2, FolderPlus, GitFork, History, Keyboard, Plus, RefreshCw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
-import brandIcon from '../assets/brand-icon.png'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronRight, FolderGit2, FolderPlus, GitFork, History, Keyboard, Plus, RefreshCw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
+import { relativeTime, statusDotClass, statusLabel } from '../workbench'
 import {
   HARNESS_IDS,
   HARNESS_LABELS,
@@ -13,18 +13,12 @@ import {
 import { TRUST_PRESET_LABELS, type TrustPreset } from '@shared/tool-policy'
 
 function trustIcon(preset: TrustPreset) {
-  if (preset === 'readonly') return <ShieldCheck size={13} color="#34d399" />
-  if (preset === 'auto') return <ShieldAlert size={13} color="#fbbf24" />
-  return <Shield size={13} color="#9aa7bd" />
+  if (preset === 'readonly') return <ShieldCheck size={13} color="var(--success)" />
+  if (preset === 'auto') return <ShieldAlert size={13} color="var(--warning)" />
+  return <Shield size={13} />
 }
 
-function statusDotClass(status: ThreadEntry['status']): string {
-  if (status === 'streaming' || status === 'starting' || status === 'compacting') return 'dot-streaming'
-  if (status === 'waiting_ui') return 'dot-waiting'
-  if (status === 'disconnected') return 'dot-disconnected'
-  if (status === 'error') return 'dot-error'
-  return 'dot-idle'
-}
+const ENGINE_MARKS: Record<HarnessId, string> = { pi: 'π', omp: 'O', prime: 'P', claude: 'C', codex: 'Cx', acp: 'A', dsh: 'D' }
 
 export function Sidebar({
   harnesses,
@@ -38,7 +32,8 @@ export function Sidebar({
   onRefreshHarnesses,
   onOpenShortcuts,
   onOpenSettings,
-  filterInputRef,
+  onOpenPalette,
+  onStartDraft,
   onAddProject,
   onRemoveProject,
   onOpenTrust,
@@ -60,7 +55,8 @@ export function Sidebar({
   onRefreshHarnesses: () => void
   onOpenShortcuts: () => void
   onOpenSettings: () => void
-  filterInputRef?: RefObject<HTMLInputElement | null>
+  onOpenPalette: () => void
+  onStartDraft: () => void
   onAddProject: () => void
   onRemoveProject: (id: string) => void
   onOpenTrust: (projectId: string) => void
@@ -72,12 +68,22 @@ export function Sidebar({
   onRefreshCliSessions: () => void
 }) {
   const [showCliSessions, setShowCliSessions] = useState(false)
-  const [filterText, setFilterText] = useState('')
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
+  const [now, setNow] = useState(Date.now)
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
   const cancelRenameRef = useRef(false)
 
-  const query = filterText.trim().toLowerCase()
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (activeThreadId && activeProjectId) {
+      setCollapsedProjects((prev) => prev[activeProjectId] ? { ...prev, [activeProjectId]: false } : prev)
+    }
+  }, [activeThreadId, activeProjectId])
 
   function startRename(thread: ThreadEntry) {
     cancelRenameRef.current = false
@@ -101,43 +107,10 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <div className="brand">
-          <img src={brandIcon} alt="AgentUI" className="brand-icon" />
-          <span>AgentUI</span>
-        </div>
-        <div style={{ display: 'flex', gap: 4 }}>
-          <button type="button" className="icon-btn" title="重新探测 CLI" onClick={onRefreshHarnesses}>
-            <RefreshCw size={14} />
-          </button>
-          <button type="button" className="icon-btn" title="快捷键 (Ctrl+/)" onClick={onOpenShortcuts}>
-            <Keyboard size={14} />
-          </button>
-          <button type="button" className="icon-btn" title="引擎路径与环境 (Ctrl+,)" onClick={onOpenSettings}>
-            <Settings size={14} />
-          </button>
-        </div>
-      </div>
-
-      <div className="engine-strip">
-        {HARNESS_IDS.map((id) => {
-          const st = harnesses[id]
-          const isActive = activeHarness === id
-          return (
-            <button
-              key={id}
-              type="button"
-              className={`engine-pill ${isActive ? 'active' : ''}`}
-              title={st?.path ? `${st.name} ${st.version ?? ''}\n${st.path}` : st?.error ?? '未检测到'}
-              onClick={() => onSelectHarness(id)}
-            >
-              <span className="engine-pill-top">
-                <span className={`dot ${st?.ready ? 'dot-ready' : 'dot-missing'}`} />
-                <span>{id === 'prime' ? 'Prime' : HARNESS_LABELS[id]}</span>
-              </span>
-              <span className="engine-pill-ver">{st?.ready ? st.version ?? 'ready' : '未就绪'}</span>
-            </button>
-          )
-        })}
+        <button type="button" className="sidebar-search" onClick={onOpenPalette}>
+          <Search size={14} /><span>搜索会话</span><kbd>Ctrl K</kbd>
+        </button>
+        <button type="button" className="icon-btn" title="新建会话" aria-label="新建会话" onClick={onStartDraft}><Plus size={17} /></button>
       </div>
 
       <div className="sidebar-scroll">
@@ -149,58 +122,20 @@ export function Sidebar({
           </button>
         </div>
 
-        <div className="sidebar-filter">
-          <Search size={12} color="var(--text-muted)" style={{ flexShrink: 0 }} />
-          <input
-            ref={filterInputRef}
-            type="text"
-            value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
-            placeholder="过滤项目 / 会话 / 分支 (Ctrl+K)"
-          />
-          {filterText && (
-            <button
-              type="button"
-              className="icon-btn"
-              style={{ width: 20, height: 20 }}
-              title="清除筛选"
-              onClick={() => setFilterText('')}
-            >
-              <X size={11} />
-            </button>
-          )}
-        </div>
-
-        {projects.length === 0 && (
-          <div style={{ padding: '14px 8px', color: 'var(--text-muted)', fontSize: 12 }}>
-            点击右上角「添加项目」，选择一个本地 Git 仓库即可开始。
-          </div>
-        )}
-
         {projects.map((project) => {
-          const projectThreads = threads.filter((t) => t.projectId === project.id)
-          const projectMatches =
-            !query ||
-            project.name.toLowerCase().includes(query) ||
-            project.path.toLowerCase().includes(query)
-          const visibleThreads = projectMatches
-            ? projectThreads
-            : projectThreads.filter(
-                (t) =>
-                  t.title.toLowerCase().includes(query) ||
-                  (t.worktreeBranch?.toLowerCase().includes(query) ?? false) ||
-                  t.harness.toLowerCase().includes(query) ||
-                  t.cwd.toLowerCase().includes(query),
-              )
-          if (query && !projectMatches && visibleThreads.length === 0) return null
+          const projectThreads = threads.filter((t) => t.projectId === project.id).sort((a, b) => b.updatedAt - a.updatedAt)
+          const expanded = !collapsedProjects[project.id]
 
           return (
             <div key={project.id} className="project-card">
               <div className={`project-row ${activeProjectId === project.id ? 'active' : ''}`}>
-                <div className="project-name" title={project.path}>
-                  <FolderGit2 size={14} color="#9aa7bd" style={{ flexShrink: 0 }} />
+                <button type="button" className="project-name" title={project.path} aria-expanded={expanded}
+                  aria-controls={`threads-${project.id}`}
+                  onClick={() => setCollapsedProjects((prev) => ({ ...prev, [project.id]: expanded }))}>
+                  <ChevronRight size={13} className={expanded ? 'project-chevron expanded' : 'project-chevron'} />
+                  <FolderGit2 size={14} />
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name}</span>
-                </div>
+                </button>
                 <div className="project-actions">
                   <button
                     type="button"
@@ -214,7 +149,10 @@ export function Sidebar({
                     type="button"
                     className="icon-btn"
                     title={`用 ${HARNESS_LABELS[activeHarness]} 新建对话`}
-                    onClick={() => onNewThread(project.id, activeHarness)}
+                    onClick={() => {
+                      setCollapsedProjects((prev) => ({ ...prev, [project.id]: false }))
+                      onNewThread(project.id, activeHarness)
+                    }}
                   >
                     <Plus size={14} />
                   </button>
@@ -229,8 +167,8 @@ export function Sidebar({
                 </div>
               </div>
 
-              <div className="thread-list">
-                {visibleThreads.map((t) => {
+              <div className="thread-list" id={`threads-${project.id}`} hidden={!expanded}>
+                {projectThreads.map((t) => {
                   const isEditing = editingThreadId === t.id
                   return (
                     <div
@@ -243,11 +181,15 @@ export function Sidebar({
                         e.stopPropagation()
                         startRename(t)
                       }}
-                      title="双击可重命名会话"
+                      title={`${t.title} · ${HARNESS_LABELS[t.harness]} · ${statusLabel(t.status)}${t.worktreeBranch ? ` · ${t.worktreeBranch}` : ''}\n双击重命名`}
                       role="button"
                       tabIndex={0}
+                      aria-current={activeThreadId === t.id ? 'true' : undefined}
                       onKeyDown={(e) => {
-                        if (!isEditing && (e.key === 'Enter' || e.key === ' ')) onSelectThread(t.id)
+                        if (e.target === e.currentTarget && !isEditing && (e.key === 'Enter' || e.key === ' ')) {
+                          e.preventDefault()
+                          onSelectThread(t.id)
+                        }
                       }}
                     >
                       <div className="thread-main">
@@ -278,22 +220,12 @@ export function Sidebar({
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</span>
                           )}
                         </div>
-                        <div className="thread-sub">
-                          <span className={`harness-tag tag-${t.harness}`}>
-                            {t.harness === 'prime' ? 'Prime' : HARNESS_LABELS[t.harness]}
-                          </span>
-                          {t.parentThreadId && (
-                            <span className="fork-tag" title="分叉自父会话">
-                              <GitFork size={9} />
-                              分叉
-                            </span>
-                          )}
-                          {t.worktreeBranch && <span className="branch-tag">⎇ {t.worktreeBranch}</span>}
-                        </div>
                       </div>
+                      {t.parentThreadId && <span className="fork-tag" title="分叉会话" aria-label="分叉会话"><GitFork size={11} /></span>}
+                      <time className="thread-time" dateTime={new Date(t.updatedAt).toISOString()}>{relativeTime(t.updatedAt, now)}</time>
                       <button
                         type="button"
-                        className="icon-btn"
+                        className="icon-btn thread-remove"
                         title="删除对话"
                         onClick={(e) => {
                           e.stopPropagation()
@@ -352,7 +284,7 @@ export function Sidebar({
                 </button>
               ))}
               {cliSessions.length === 0 && (
-                <div style={{ padding: '4px 8px', color: 'var(--text-muted)', fontSize: 11.5 }}>
+                <div style={{ padding: '4px 8px', color: 'var(--text-muted)', fontSize: 12.5 }}>
                   暂未扫描到历史 `.jsonl` 会话。
                 </div>
               )}
@@ -360,6 +292,27 @@ export function Sidebar({
           )}
         </div>
       </div>
+      <footer className="sidebar-footer">
+        <div className="engine-strip" role="group" aria-label="引擎状态">
+          {HARNESS_IDS.map((id) => {
+            const status = harnesses[id]
+            const label = `${HARNESS_LABELS[id]} · ${status?.ready ? status.version ?? '就绪' : '未就绪'}`
+            return (
+              <button key={id} type="button" className={`engine-pill ${activeHarness === id ? 'active' : ''}`}
+                aria-label={label} aria-pressed={activeHarness === id} title={status?.path ? `${label}\n${status.path}` : label}
+                onClick={() => onSelectHarness(id)}>
+                <span className={`engine-mark tag-${id}`}>{ENGINE_MARKS[id]}</span>
+                <span className={`dot ${status?.ready ? 'dot-ready' : 'dot-idle'}`} />
+              </button>
+            )
+          })}
+        </div>
+        <div className="sidebar-footer-actions">
+          <button type="button" className="icon-btn" title="设置 (Ctrl+,)" aria-label="设置" onClick={onOpenSettings}><Settings size={15} /></button>
+          <button type="button" className="icon-btn" title="重新探测引擎" aria-label="重新探测引擎" onClick={onRefreshHarnesses}><RefreshCw size={14} /></button>
+          <button type="button" className="icon-btn" title="快捷键 (Ctrl+/)" aria-label="快捷键" onClick={onOpenShortcuts}><Keyboard size={16} /></button>
+        </div>
+      </footer>
     </aside>
   )
 }

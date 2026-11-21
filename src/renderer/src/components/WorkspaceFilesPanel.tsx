@@ -162,7 +162,7 @@ export function WorkspaceFilesPanel({
     <div className="ws-files-panel">
       <div className="ws-tree-pane">
         <div className="ws-tree-toolbar">
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cwd}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cwd}>
             {cwd}
           </span>
           <button type="button" className="icon-btn" title="刷新文件树" onClick={() => void loadRoot()}>
@@ -172,7 +172,7 @@ export function WorkspaceFilesPanel({
         <div className="ws-tree-scroll">
           {error && <div className="msg-notice error" style={{ margin: 6 }}>{error}</div>}
           {rootEntries.length === 0 && !error && (
-            <div style={{ padding: 10, fontSize: 11.5, color: 'var(--text-muted)' }}>目录为空或不可读。</div>
+            <div style={{ padding: 10, fontSize: 12.5, color: 'var(--text-muted)' }}>目录为空或不可读。</div>
           )}
           {renderEntries(rootEntries, 0)}
         </div>
@@ -189,7 +189,7 @@ export function WorkspaceFilesPanel({
           <>
             <div className="ws-preview-header">
               <span className="ws-preview-path" title={file.path}>{file.path}</span>
-              <span style={{ fontSize: 10.5, color: 'var(--text-muted)', flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)', flexShrink: 0 }}>
                 {formatBytes(file.sizeBytes)}
                 {file.language ? ` · ${file.language}` : ''}
               </span>

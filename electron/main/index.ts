@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, nativeTheme, shell } from 'electron'
 import { HarnessDiscoveryService } from './discovery'
 import { BrowserCompanionService } from './browser-companion'
 import { GitService } from './git/git-service'
@@ -78,19 +78,27 @@ const runtimeManager = new RuntimeManager(store, discovery, {
       mainWindow.webContents.send('agentui:extensionUiRequest', req)
     }
   },
-})
+}, git)
 
 function createMainWindow(): void {
   const rendererFilePath = join(__dirname, '../renderer/index.html')
   const rendererFileUrl = pathToFileURL(rendererFilePath).href
 
-  mainWindow = new BrowserWindow({
+  const overlay = () => ({
+    color: '#00000000',
+    symbolColor: nativeTheme.shouldUseDarkColors ? '#e9e9e7' : '#252726',
+    height: 46,
+  })
+  const win = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1020,
     minHeight: 640,
-    backgroundColor: '#0e1116',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#18191b' : '#faf9f7',
     title: 'AgentUI — 多引擎编码 Agent 工作台',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: process.platform === 'darwin' ? true : overlay(),
+    autoHideMenuBar: true,
     icon: resolveAppIcon(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -99,6 +107,11 @@ function createMainWindow(): void {
       sandbox: true,
     },
   })
+  mainWindow = win
+  const onThemeUpdate = () => {
+    if (process.platform !== 'darwin' && !win.isDestroyed()) win.setTitleBarOverlay(overlay())
+  }
+  nativeTheme.on('updated', onThemeUpdate)
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) {
@@ -137,11 +150,13 @@ function createMainWindow(): void {
   }
 
   mainWindow.on('closed', () => {
+    nativeTheme.removeListener('updated', onThemeUpdate)
     mainWindow = null
   })
 }
 
 void app.whenReady().then(async () => {
+  nativeTheme.themeSource = store.snapshot().appearance.theme
   registerIpcHandlers({
     getWindow: () => mainWindow,
     store,

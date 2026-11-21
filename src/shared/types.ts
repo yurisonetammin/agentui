@@ -1,3 +1,6 @@
+import type { AppearanceSettings, ConversationSettings, HarnessDefaults } from './settings'
+import type { AppDiagnostics } from './diagnostics'
+
 export type HarnessId = 'pi' | 'omp' | 'prime' | 'claude' | 'codex' | 'acp' | 'dsh'
 
 export const HARNESS_IDS: readonly HarnessId[] = ['pi', 'omp', 'prime', 'claude', 'codex', 'acp', 'dsh']
@@ -194,6 +197,8 @@ export interface BrowserOpenResult {
   url: string
   title: string
   spaceId: number | null
+  /** Tab list captured in the same script round (saves a second ego-browser spawn). */
+  tabs?: BrowserTabInfo[]
 }
 
 export interface BrowserScreenshotResult {
@@ -297,8 +302,21 @@ export type TimelineItem =
       role: 'notice'
       kind: 'info' | 'warning' | 'error' | 'compaction'
       text: string
+      details?: string
       timestamp: number
     }
+  | {
+      id: string
+      role: 'change-summary'
+      changes: GitTurnChanges
+      timestamp: number
+    }
+
+export interface GitTurnChanges {
+  files: number
+  added: number
+  removed: number
+}
 
 export interface ExtensionUiRequest {
   id: string
@@ -306,12 +324,15 @@ export interface ExtensionUiRequest {
   method: 'select' | 'confirm' | 'input' | 'editor'
   title: string
   message?: string
+  command?: string
   options?: string[]
   placeholder?: string
   prefill?: string
   timeout?: number
+  /** True when the engine withdrew a previously issued request; the renderer should drop it. */
+  dismissed?: boolean
   /** Risk assessment attached by the project trust policy (confirm/select only). */
-  risk?: { level: import('./tool-policy').ToolRiskLevel; reasons: string[] }
+  risk?: { level: import('./tool-policy').ToolRiskLevel; reasons: string[]; command?: string | null }
   policyPreset?: import('./tool-policy').TrustPreset
 }
 
@@ -364,6 +385,10 @@ export interface PersistedState {
   projects: ProjectEntry[]
   threads: ThreadEntry[]
   customBinaryPaths: Partial<Record<HarnessId, string>>
+  appearance: AppearanceSettings
+  conversation: ConversationSettings
+  defaultProjectTrust: import('./tool-policy').TrustPreset
+  harnessDefaults: Partial<Record<HarnessId, HarnessDefaults>>
   activeHarness: HarnessId
   activeProjectId: string | null
   activeThreadId: string | null
@@ -378,6 +403,7 @@ export interface ThreadEventEnvelope {
 export interface ThreadStatusUpdate {
   threadId: string
   status: ThreadRunStatus
+  updatedAt?: number
   title?: string
   sessionPath?: string | null
   lastError?: string | null
@@ -412,11 +438,18 @@ export interface SendPromptInput {
 
 export interface AgentUiApi {
   getState(): Promise<PersistedState>
+  getDiagnostics(refresh?: boolean): Promise<AppDiagnostics>
   discoverHarnesses(refresh?: boolean): Promise<Record<HarnessId, HarnessStatus>>
+  testHarnessPath(harness: HarnessId, binaryPath: string): Promise<HarnessStatus>
   setCustomBinaryPath(harness: HarnessId, binaryPath: string | null): Promise<Record<HarnessId, HarnessStatus>>
+  setHarnessDefaults(harness: HarnessId, defaults: HarnessDefaults): Promise<HarnessDefaults>
+  setAppearance(patch: Partial<AppearanceSettings>): Promise<AppearanceSettings>
+  setConversationSettings(patch: Partial<ConversationSettings>): Promise<ConversationSettings>
+  setDefaultProjectTrust(preset: import('./tool-policy').TrustPreset): Promise<import('./tool-policy').TrustPreset>
   setActiveHarness(harness: HarnessId): Promise<void>
   getModelCatalog(harness: HarnessId, refresh?: boolean): Promise<ModelCatalogResult>
   pickDirectory(): Promise<string | null>
+  pickExecutable(): Promise<string | null>
   addProject(dirPath: string): Promise<ProjectEntry>
   removeProject(projectId: string): Promise<void>
   setActiveProject(projectId: string | null): Promise<void>
@@ -426,6 +459,7 @@ export interface AgentUiApi {
   setActiveThread(threadId: string | null): Promise<void>
   updateThreadMeta(threadId: string, patch: Partial<Pick<ThreadEntry, 'title' | 'harness' | 'modelProvider' | 'modelId' | 'thinkingLevel'>>): Promise<ThreadEntry>
   getThreadTimeline(threadId: string): Promise<TimelineItem[]>
+  getThreadTurnDiff(threadId: string, summaryId: string): Promise<string | null>
   sendPrompt(input: SendPromptInput): Promise<void>
   abortThread(threadId: string): Promise<void>
   reconnectThread(threadId: string): Promise<void>
@@ -445,6 +479,7 @@ export interface AgentUiApi {
   browserSpaces(): Promise<BrowserSpaceInfo[]>
   browserTabs(): Promise<BrowserTabInfo[]>
   browserOpen(url: string): Promise<BrowserOpenResult>
+  browserActivateTab(label: string): Promise<BrowserTabInfo[]>
   browserScreenshot(): Promise<BrowserScreenshotResult>
   getThreadCommands(threadId: string): Promise<SlashCommandDescriptor[]>
   getThreadForkTree(threadId: string): Promise<SessionTreeSnapshot>

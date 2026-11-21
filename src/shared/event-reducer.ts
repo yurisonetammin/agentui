@@ -143,6 +143,17 @@ export function applyRpcEventToTimeline(
   const type = asString(event.type)
   if (!type) return items
 
+  if (type === 'git_turn_summary') {
+    const id = asString(event.id)
+    const { files, added, removed } = event
+    if (!id || typeof files !== 'number' || files < 1 || typeof added !== 'number' || typeof removed !== 'number') return items
+    if (items.some((item) => item.id === id)) return items
+    const timestamp = typeof event.endedAt === 'number' ? event.endedAt : now
+    const summary: TimelineItem = { id, role: 'change-summary', changes: { files, added, removed }, timestamp }
+    const insertion = items.findIndex((item) => item.timestamp > timestamp)
+    return insertion === -1 ? [...items, summary] : [...items.slice(0, insertion), summary, ...items.slice(insertion)]
+  }
+
   if (type === 'agent_start') {
     const { next } = ensureStreamingAssistant(items, now)
     return next
@@ -361,7 +372,6 @@ export function applyRpcEventToTimeline(
     }
     if (isUnexpectedExit) {
       const reason = asString(event.reason)
-      const detail = reason ? `（${reason}）` : ''
       const exitKind =
         event.wasStreaming === true || (typeof event.code === 'number' && event.code !== 0)
           ? 'error'
@@ -370,7 +380,8 @@ export function applyRpcEventToTimeline(
         id: `exit-${now}-${Math.random().toString(36).slice(2, 7)}`,
         role: 'notice',
         kind: exitKind,
-        text: `Agent 进程意外退出${detail}，可点击下方「重新连接」或「重试上一条指令」。`,
+        text: 'Agent 进程意外退出',
+        details: reason,
         timestamp: now,
       })
     }

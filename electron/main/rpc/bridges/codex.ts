@@ -120,12 +120,17 @@ export class CodexAppServerBridge implements ProtocolBridge {
       const params: RpcObject = {
         cwd: ctx.cwd,
         approvalPolicy: 'on-request',
-        sandbox: 'workspace-write',
+        sandbox: this.sandboxMode(),
       }
       if (this.currentModel) params.model = this.currentModel
       const res = await this.peer.request('thread/start', params)
       this.applyThread(res, ctx)
     }
+  }
+
+  /** Align Codex's own sandbox with the project trust preset (read-only observation → read-only sandbox). */
+  private sandboxMode(): 'read-only' | 'workspace-write' {
+    return this.info.getTrustPreset?.() === 'readonly' ? 'read-only' : 'workspace-write'
   }
 
   private applyThread(res: RpcObject, ctx: BridgeContext): void {
@@ -159,7 +164,7 @@ export class CodexAppServerBridge implements ProtocolBridge {
         if (method === 'turn/start') {
           params.cwd = ctx.cwd
           params.approvalPolicy = 'on-request'
-          params.sandboxPolicy = { type: 'workspaceWrite' }
+          params.sandboxPolicy = { type: this.sandboxMode() === 'read-only' ? 'readOnly' : 'workspaceWrite' }
           if (this.currentModel) params.model = this.currentModel
         }
         this.streaming = true
@@ -290,12 +295,16 @@ export class CodexAppServerBridge implements ProtocolBridge {
 
     switch (method) {
       case 'turn/started': {
+        // turn/start already emitted agent_start optimistically; don't duplicate it.
+        const alreadyRunning = this.streaming
         this.streaming = true
-        ctx.emit({ type: 'agent_start' })
+        if (!alreadyRunning) ctx.emit({ type: 'agent_start' })
         return
       }
       case 'turn/completed': {
         this.streaming = false
+        // Approvals cannot outlive their turn (e.g. after an interrupt): drop stale cards.
+        this.dismissPendingApprovals(ctx)
         const turn = isRecord(params.turn) ? params.turn : null
         const status = turn ? asString(turn.status) : undefined
         if (status === 'failed') {
@@ -347,6 +356,15 @@ export class CodexAppServerBridge implements ProtocolBridge {
         this.handleTokenUsage(params, ctx)
         return
       }
+      case 'serverRequest/resolved': {
+        // The approval was answered elsewhere (another client / the CLI itself).
+        const resolvedId = params.id ?? params.requestId
+        const key = resolvedId !== undefined && resolvedId !== null ? String(resolvedId) : null
+        if (key && this.approvals.delete(key)) {
+          ctx.emit({ type: 'extension_ui_request', method: 'dismiss', id: key })
+        }
+        return
+      }
       case 'error': {
         const error = isRecord(params.error) ? params.error : params
         const message = asString(error.message) ?? 'Codex 运行时错误'
@@ -362,7 +380,7 @@ export class CodexAppServerBridge implements ProtocolBridge {
         return
       }
       default:
-        // thread/started, turn/diff/updated, serverRequest/resolved etc. are informational.
+        // thread/started, turn/diff/updated etc. are informational.
         return
     }
   }
@@ -494,6 +512,13 @@ export class CodexAppServerBridge implements ProtocolBridge {
     })
   }
 
+  private dismissPendingApprovals(ctx: BridgeContext): void {
+    for (const id of this.approvals.keys()) {
+      ctx.emit({ type: 'extension_ui_request', method: 'dismiss', id })
+    }
+    this.approvals.clear()
+  }
+
   private handleServerRequest(method: string, params: RpcObject, rawId: unknown, ctx: BridgeContext): void {
     const id = String(rawId)
     if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
@@ -518,6 +543,7 @@ export class CodexAppServerBridge implements ProtocolBridge {
         method: 'confirm',
         title: kind === 'command' ? 'Codex 请求执行命令' : 'Codex 请求应用文件变更',
         message,
+        command: kind === 'command' ? command : undefined,
       })
       return
     }

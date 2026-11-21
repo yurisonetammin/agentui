@@ -2,12 +2,17 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { HARNESS_IDS, type PersistedState } from '@shared/types'
+import { DEFAULT_APPEARANCE, DEFAULT_CONVERSATION, normalizeAppearance, normalizeConversation, normalizeHarnessSettings } from '@shared/settings'
 import { isTrustPreset } from '@shared/tool-policy'
 
 const DEFAULT_STATE: PersistedState = {
   projects: [],
   threads: [],
   customBinaryPaths: {},
+  appearance: DEFAULT_APPEARANCE,
+  conversation: DEFAULT_CONVERSATION,
+  defaultProjectTrust: 'approval',
+  harnessDefaults: {},
   activeHarness: 'pi',
   activeProjectId: null,
   activeThreadId: null,
@@ -35,6 +40,10 @@ export class StateStore {
           ? raw.threads.map((t) => ({ ...t, status: 'idle', lastError: null }))
           : [],
         customBinaryPaths: raw.customBinaryPaths && typeof raw.customBinaryPaths === 'object' ? raw.customBinaryPaths : {},
+        appearance: normalizeAppearance(raw.appearance),
+        conversation: normalizeConversation(raw.conversation),
+        defaultProjectTrust: isTrustPreset(raw.defaultProjectTrust) ? raw.defaultProjectTrust : 'approval',
+        harnessDefaults: normalizeHarnessSettings(raw.harnessDefaults),
         activeHarness: HARNESS_IDS.includes(raw.activeHarness as never) ? raw.activeHarness! : 'pi',
         activeProjectId: typeof raw.activeProjectId === 'string' ? raw.activeProjectId : null,
         activeThreadId: typeof raw.activeThreadId === 'string' ? raw.activeThreadId : null,
@@ -44,13 +53,13 @@ export class StateStore {
     }
   }
 
-  private saveToDisk(): void {
+  private saveToDisk(next: PersistedState): void {
     const dir = dirname(this.filePath)
     mkdirSync(dir, { recursive: true })
     const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`
     const cleanState: PersistedState = {
-      ...this.state,
-      threads: this.state.threads.map((t) => ({
+      ...next,
+      threads: next.threads.map((t) => ({
         ...t,
         status: 'idle',
         lastError: null,
@@ -65,8 +74,10 @@ export class StateStore {
   }
 
   mutate(fn: (draft: PersistedState) => void): PersistedState {
-    fn(this.state)
-    this.saveToDisk()
+    const next = this.snapshot()
+    fn(next)
+    this.saveToDisk(next)
+    this.state = next
     return this.snapshot()
   }
 }

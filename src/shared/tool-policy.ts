@@ -19,9 +19,9 @@ export const TRUST_PRESET_LABELS: Record<TrustPreset, string> = {
 }
 
 export const TRUST_PRESET_DESCRIPTIONS: Record<TrustPreset, string> = {
-  readonly: 'Agent 只能读取与检索；写入文件、执行非只读命令等审批请求会被自动拒绝并提示。',
-  approval: '默认预设：所有工具审批请求弹窗由你确认，高风险命令附加醒目警告。',
-  auto: '常规操作自动批准以保持流畅；命中高风险规则的操作仍会弹窗要求人工确认。',
+  readonly: '在审批请求中允许读取与检索，自动拒绝写入或非只读命令。',
+  approval: '工具审批请求由你在时间线中确认，高风险命令会醒目标出。',
+  auto: '常规操作自动批准；命中高风险规则的操作仍需要人工确认。',
 }
 
 export function isTrustPreset(value: unknown): value is TrustPreset {
@@ -163,7 +163,7 @@ function extractCommand(title: string, message?: string): string | null {
     }
   }
   // Codex bridge sends the raw command as the first line.
-  if (/codex/i.test(title)) {
+  if (/codex.*执行命令/i.test(title)) {
     const line = text.split(/\r?\n/)[0]?.trim()
     if (line && !line.startsWith('原因')) return line
   }
@@ -176,8 +176,8 @@ function extractToolName(title: string): string {
   return m?.[1] ?? title
 }
 
-export function assessToolRequest(req: { title: string; message?: string }): ToolRiskAssessment {
-  const command = extractCommand(req.title, req.message)
+export function assessToolRequest(req: { title: string; message?: string; command?: string }): ToolRiskAssessment {
+  const command = req.command?.trim() ? req.command : extractCommand(req.title, req.message)
   const haystack = `${req.title}\n${command ?? ''}\n${req.message ?? ''}`
   const reasons: string[] = []
   for (const rule of HIGH_RISK_RULES) {

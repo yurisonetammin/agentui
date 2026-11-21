@@ -23,12 +23,19 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
 
 const api: AgentUiApi = {
   getState: () => ipcRenderer.invoke('app:getState'),
+  getDiagnostics: (refresh) => ipcRenderer.invoke('app:getDiagnostics', refresh),
   discoverHarnesses: (refresh?: boolean) => ipcRenderer.invoke('harnesses:discover', refresh),
+  testHarnessPath: (harness, path) => ipcRenderer.invoke('harnesses:testPath', harness, path),
   setCustomBinaryPath: (harness: HarnessId, binaryPath: string | null) =>
     ipcRenderer.invoke('harnesses:setCustomPath', harness, binaryPath),
   setActiveHarness: (harness: HarnessId) => ipcRenderer.invoke('harnesses:setActive', harness),
+  setHarnessDefaults: (harness, defaults) => ipcRenderer.invoke('settings:setHarnessDefaults', harness, defaults),
+  setAppearance: (patch) => ipcRenderer.invoke('settings:setAppearance', patch),
+  setConversationSettings: (patch) => ipcRenderer.invoke('settings:setConversation', patch),
+  setDefaultProjectTrust: (preset) => ipcRenderer.invoke('settings:setDefaultProjectTrust', preset),
   getModelCatalog: (harness: HarnessId, refresh?: boolean) => ipcRenderer.invoke('models:catalog', harness, refresh),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDirectory'),
+  pickExecutable: () => ipcRenderer.invoke('dialog:pickExecutable'),
   addProject: (dirPath: string) => ipcRenderer.invoke('projects:add', dirPath),
   removeProject: (projectId: string) => ipcRenderer.invoke('projects:remove', projectId),
   setActiveProject: (projectId: string | null) => ipcRenderer.invoke('projects:setActive', projectId),
@@ -39,6 +46,7 @@ const api: AgentUiApi = {
   updateThreadMeta: (threadId: string, patch: Partial<Pick<ThreadEntry, 'title' | 'harness' | 'modelProvider' | 'modelId' | 'thinkingLevel'>>) =>
     ipcRenderer.invoke('threads:updateMeta', threadId, patch),
   getThreadTimeline: (threadId: string) => ipcRenderer.invoke('threads:getTimeline', threadId),
+  getThreadTurnDiff: (threadId: string, summaryId: string) => ipcRenderer.invoke('threads:getTurnDiff', threadId, summaryId),
   sendPrompt: (input: SendPromptInput) => ipcRenderer.invoke('threads:sendPrompt', input),
   abortThread: (threadId: string) => ipcRenderer.invoke('threads:abort', threadId),
   reconnectThread: (threadId: string) => ipcRenderer.invoke('threads:reconnect', threadId),
@@ -58,6 +66,7 @@ const api: AgentUiApi = {
   browserSpaces: () => ipcRenderer.invoke('browser:spaces'),
   browserTabs: () => ipcRenderer.invoke('browser:tabs'),
   browserOpen: (url: string) => ipcRenderer.invoke('browser:open', url),
+  browserActivateTab: (label: string) => ipcRenderer.invoke('browser:activateTab', label),
   browserScreenshot: () => ipcRenderer.invoke('browser:screenshot'),
   getThreadCommands: (threadId: string) => ipcRenderer.invoke('threads:getCommands', threadId),
   getThreadForkTree: (threadId: string) => ipcRenderer.invoke('threads:getForkTree', threadId),

@@ -61,6 +61,8 @@ export interface BridgeStartInfo {
   modelId?: string | null
   thinkingLevel?: ThinkingLevel
   executablePath: string
+  /** Current project trust preset; read per turn so preset changes apply without a restart. */
+  getTrustPreset?: () => import('@shared/tool-policy').TrustPreset
 }
 
 export function isRecord(value: unknown): value is RpcObject {

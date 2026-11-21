@@ -19,7 +19,7 @@
 | [src/shared/ui-queue.ts](src/shared/ui-queue.ts) | 纯函数多会话 `ExtensionUiRequest` 队列管理 |
 | [src/shared/shortcuts.ts](src/shared/shortcuts.ts) | 纯函数全局快捷键匹配与速查清单 `SHORTCUT_HINTS` |
 | [src/shared/composer-autocomplete.ts](src/shared/composer-autocomplete.ts) | 纯函数 `@file` / `/slash` 触发检测、路径模糊评分与内置斜杠命令解析 |
-| [src/shared/capabilities.ts](src/shared/capabilities.ts) | 7 引擎 × 11 项能力矩阵 `HARNESS_CAPABILITIES` 与桥接限制脚注（设置弹窗展示） |
+| [src/shared/capabilities.ts](src/shared/capabilities.ts) | 7 引擎 × 11 项能力矩阵 `HARNESS_CAPABILITIES` 与桥接限制脚注（设置页展示） |
 | [src/shared/tool-policy.ts](src/shared/tool-policy.ts) | 纯函数项目信任策略：`TrustPreset`（只读/审批/自动）、只读命令分类、约 21 条高风险规则、`assessToolRequest` / `decideApproval` / `pickSelectOption` |
 | [assets/](assets/) | 应用透明圆角图标资源（`icon.ico` 多分辨率 16–256px、`icon.png` 512px） |
 | [electron/main/index.ts](electron/main/index.ts) | Electron 入口、窗口创建与图标绑定、`AppUserModelId`、`sandbox: true`、`.cjs` preload、`will-navigate` 安全拦截、`AGENTUI_STATE_PATH` |
@@ -34,7 +34,7 @@
 | [electron/main/rpc/bridge.ts](electron/main/rpc/bridge.ts) | 统一传输层抽象：`ProtocolBridge` / `BridgeContext` / `BridgeStartInfo` 与 `JsonRpcPeer`（Codex/ACP 用 JSON-RPC 2.0 客户端） |
 | [electron/main/rpc/bridges/](electron/main/rpc/bridges/) | `claude.ts`（stream-json + control_request 审批）、`codex.ts`（app-server v2 thread/turn/item）、`acp.ts`（ACP v1，dsh 复用；只读 fs 守卫） |
 | [electron/main/rpc/runtime.ts](electron/main/rpc/runtime.ts) | 单会话子进程生命周期、`negotiate_protocol` 握手（原生）或 `bridge.initialize`（桥接）、请求 ID 关联、优雅退出 + `taskkill /T /F` |
-| [electron/main/rpc/manager.ts](electron/main/rpc/manager.ts) | `RuntimeManager`，多会话并发隔离进程池、乐观消息插入与时间线缓存；`handleExtensionUiRequest` 按项目信任预设在审批边界拦截 confirm/select（自动放行/拒绝留痕、高风险强制弹窗） |
+| [electron/main/rpc/manager.ts](electron/main/rpc/manager.ts) | `RuntimeManager`，多会话并发隔离进程池、乐观消息插入与时间线缓存；`handleExtensionUiRequest` 按项目信任预设在审批边界拦截 confirm/select（自动放行/拒绝留痕、高风险强制人工确认） |
 | [electron/main/sessions/catalog.ts](electron/main/sessions/catalog.ts) | 扫描与回放 CLI 原生 `.jsonl` 历史会话（Pi 风格 + Claude uuid/parentUuid 链，内容嗅探区分）、活跃分支树解析与非破坏性分叉文件生成；桥接引擎会话降级提示 |
 | [electron/main/workspace-files.ts](electron/main/workspace-files.ts) | `WorkspaceFileService`：基于 `git ls-files -z`（含非 Git 目录回退）与短缓存的 `@file` 文件索引 |
 | [electron/main/workspace-browser.ts](electron/main/workspace-browser.ts) | `WorkspaceBrowserService`：文件树懒加载 listing 与只读预览（路径越界守卫、隐藏目录过滤、512KB 截断、二进制检测、语言识别） |
@@ -42,9 +42,9 @@
 | [electron/main/browser-companion.ts](electron/main/browser-companion.ts) | `BrowserCompanionService`：ego-browser 探测与快捷控制（临时 `.mjs` + `nodejs -e import`、串行队列、仅 http(s)、stdout/stderr 双流搜结果）、4 类 MCP 配置只读扫描与浏览器型分类 |
 | [electron/main/git/git-service.ts](electron/main/git/git-service.ts) | `GitService`：`status -z`、staged/unstaged/untracked diff、Stage/Unstage/Discard/Commit、Worktree 增删 |
 | [electron/preload/index.ts](electron/preload/index.ts) | 通过 `contextBridge.exposeInMainWorld('agentui', api)` 暴露只读安全 API |
-| [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、时间线虚拟滚动（react-virtual 动态测高 + 贴底跟随）、`@file`/`/slash` 补全、图片粘贴/拖拽、分叉树与对比、排队式 `ExtensionUiModal`、模型/Thinking 切换、Steer/Follow-up/Abort |
-| [src/renderer/src/components/](src/renderer/src/components/) | `Sidebar`（品牌图标、搜索、双击重命名、分叉徽标与项目信任盾牌按钮）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（四页抽屉：变更/Worktrees/文件/终端，防竞态 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsModal`（引擎路径 + 能力矩阵）、`ShortcutsModal`、`ExtensionUiModal`（高风险红色警告横幅 + 预设徽标）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
-| [tests/](tests/) | Vitest 单元测试套件（当前 18 个测试文件；`claude-live-handshake.test.ts` 为真实 CLI 集成测试，未安装时自动跳过；`browser-companion.test.ts` 含真实 ego 探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例） |
+| [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、时间线虚拟滚动（react-virtual 动态测高 + 贴底跟随）、`@file`/`/slash` 补全、图片粘贴/拖拽、分叉树与对比、在对应会话时间线内排队显示 `ExtensionUiCard`、模型/Thinking 切换、Steer/Follow-up/Abort |
+| [src/renderer/src/components/](src/renderer/src/components/) | `WorkbenchHeader`（标题栏与工作区工具）、`CommandPalette`（搜索会话与快速导航）、`Sidebar`（可折叠项目、会话与引擎状态）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（变更、文件、终端、浏览器与工作树标签，支持预览回合 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsPage`（引擎与模型、外观与布局、会话与快捷键、项目与权限、诊断与关于）、`ShortcutsModal`、`ExtensionUiCard`（内嵌审批、权限预设与高风险命令）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
+| [tests/](tests/) | Vitest 单元测试套件（当前 21 个测试文件；`claude-live-handshake.test.ts` 为真实 CLI 集成测试，未安装时自动跳过；`browser-companion.test.ts` 含真实 ego 探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例；`p1-fixes.test.ts` 覆盖 P1 评审修复：Claude/Codex 桥接去重与审批撤销、set_model 双层回滚、Codex 信任预设沙箱联动、MCP TOML 解析） |
 
 ## 3. 核心工程铁律（修改代码时严禁破坏）
 
@@ -69,7 +69,7 @@
 9. **Claude Code 的 `system/init` 时序**：
    实测 2.1.325 的 `system/init` 在**首条用户消息之后**才发出；启动阶段只有 SessionStart hook 帧（携带 `session_id`）。桥接器对任意 `system` 帧捕获会话 ID，不要假设启动即有 init。Thinking 档位经 `MAX_THINKING_TOKENS` 环境变量在 spawn 时注入，会话内切换需重连生效。
 10. **信任策略只在审批边界生效，高风险必须人工确认**：
-   策略拦截统一位于 `RuntimeManager.handleExtensionUiRequest`（confirm/select），策略逻辑保持在 [src/shared/tool-policy.ts](src/shared/tool-policy.ts) 纯函数内。任何预设下 `level === 'high'` 都必须弹窗（auto 也不例外）；input/editor 永远交由用户；自动应答失败必须降级为人工弹窗。引擎静默自动执行时无法拦截——不要向用户承诺超出审批层的强制力。
+   策略拦截统一位于 `RuntimeManager.handleExtensionUiRequest`（confirm/select），策略逻辑保持在 [src/shared/tool-policy.ts](src/shared/tool-policy.ts) 纯函数内。任何预设下 `level === 'high'` 都必须在对应会话的时间线内请求人工确认。input/editor 一律交由用户。自动应答失败时显示人工审批卡片。引擎静默自动执行时无法拦截——不要向用户承诺超出审批层的强制力。
 11. **ego-browser 脚本执行约束**：
    经 `BrowserCompanionService` 的临时 `.mjs` 文件 + `ego-browser nodejs -e "await import('file:///...')"` 执行（`shell: false`、超时 `killProcessTree`、串行队列）；URL 必须校验仅 http(s) 且经 `JSON.stringify` 注入，严禁向渲染端暴露任意脚本执行接口。ego-browser（Chromium 系）在管道 stdio 下把脚本 console 输出写到 **stderr**（退出码 0），结果标记必须双流搜索；版本号可为四段（`0.6.3.14`）。
 

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readSessionTimeline, scanCliSessions } from '../electron/main/sessions/catalog'
 import { StateStore } from '../electron/main/store'
+import { DEFAULT_APPEARANCE, DEFAULT_CONVERSATION } from '../src/shared/settings'
 
 describe('StateStore and CLI session catalog', () => {
   const dirs: string[] = []
@@ -27,6 +28,29 @@ describe('StateStore and CLI session catalog', () => {
     const s2 = new StateStore(file)
     expect(s2.snapshot().activeHarness).toBe('omp')
     expect(s2.snapshot().projects).toHaveLength(1)
+  })
+
+  it('loads older state and persists appearance and per-engine defaults', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentui-settings-'))
+    dirs.push(dir)
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ activeHarness: 'omp' }))
+    const store = new StateStore(file)
+    expect(store.snapshot().appearance).toEqual(DEFAULT_APPEARANCE)
+    expect(store.snapshot().conversation).toEqual(DEFAULT_CONVERSATION)
+    expect(store.snapshot().defaultProjectTrust).toBe('approval')
+    expect(store.snapshot().harnessDefaults).toEqual({})
+    store.mutate((draft) => {
+      draft.appearance = { ...draft.appearance, theme: 'dark', codeFontSize: 16, terminalPlacement: 'bottom' }
+      draft.conversation = { enterWhileRunning: 'steer', collapseToolGroups: false }
+      draft.defaultProjectTrust = 'readonly'
+      draft.harnessDefaults.omp = { model: { provider: 'fixture', id: 'test-model' }, thinkingLevel: 'high' }
+    })
+    const reloaded = new StateStore(file).snapshot()
+    expect(reloaded.appearance).toMatchObject({ theme: 'dark', codeFontSize: 16, terminalPlacement: 'bottom' })
+    expect(reloaded.conversation).toEqual({ enterWhileRunning: 'steer', collapseToolGroups: false })
+    expect(reloaded.defaultProjectTrust).toBe('readonly')
+    expect(reloaded.harnessDefaults).toEqual({ omp: { model: { provider: 'fixture', id: 'test-model' }, thinkingLevel: 'high' } })
   })
 
   it('scans JSONL session files and reconstructs timeline', () => {

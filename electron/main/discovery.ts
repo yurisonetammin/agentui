@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { HARNESS_IDS, type HarnessId, type HarnessStatus, type PrimeImplementation } from '@shared/types'
 import {
   HARNESS_DESCRIPTORS,
@@ -83,105 +83,71 @@ export class HarnessDiscoveryService {
     return this.statuses.prime.implementation
   }
 
-  async refresh(customPaths: Partial<Record<HarnessId, string>> = {}): Promise<Record<HarnessId, HarnessStatus>> {
+  private readonly revisions = new Map<HarnessId, number>()
+
+  private nextRevision(id: HarnessId): number {
+    const revision = (this.revisions.get(id) ?? 0) + 1
+    this.revisions.set(id, revision)
+    return revision
+  }
+
+  applyProbe(status: HarnessStatus): Record<HarnessId, HarnessStatus> {
+    this.nextRevision(status.id)
+    this.statuses[status.id] = status
+    return this.snapshot()
+  }
+
+  async probe(id: HarnessId, explicitPath?: string): Promise<HarnessStatus> {
+    const descriptor = HARNESS_DESCRIPTORS[id]
     const home = homedir()
-    const entries = await Promise.all(
-      HARNESS_IDS.map(async (id): Promise<[HarnessId, HarnessStatus]> => {
-        const desc = HARNESS_DESCRIPTORS[id]
-        const candidates = harnessExecutableCandidates(desc, customPaths[id])
-        const path = findRunnableCandidate(candidates)
-        const agentDir = desc.agentDir(home, process.env, path)
-        const sessionRoot = desc.sessionRoot(home, process.env, path)
+    if (explicitPath !== undefined && !isAbsolute(explicitPath)) {
+      return { ...this.emptyStatus(id), error: '请输入可执行文件的绝对路径' }
+    }
+    const candidates = explicitPath === undefined ? harnessExecutableCandidates(descriptor) : [explicitPath]
+    const path = findRunnableCandidate(candidates)
+    const base: HarnessStatus = {
+      id,
+      name: descriptor.name,
+      path,
+      version: null,
+      ready: false,
+      agentDir: descriptor.agentDir(home, process.env, path),
+      sessionRoot: descriptor.sessionRoot(home, process.env, path),
+    }
+    if (!path) {
+      return {
+        ...base,
+        error: explicitPath === undefined
+          ? `未在 PATH 或默认安装目录找到 ${descriptor.name}`
+          : '找不到指定的可执行文件，或该路径无法访问',
+      }
+    }
 
-        if (!path) {
-          return [
-            id,
-            {
-              id,
-              name: desc.name,
-              path: null,
-              version: null,
-              ready: false,
-              error: `未在 PATH 或默认安装目录找到 ${desc.name}`,
-              agentDir,
-              sessionRoot,
-            },
-          ]
-        }
+    try {
+      const result = await runProcess(path, ['--version'], { timeoutMs: 10_000, maxBytes: 32 * 1024 })
+      if (result.timedOut) return { ...base, error: '探测 --version 超时' }
+      if (result.outputExceeded) return { ...base, error: '版本命令的输出超出限制' }
+      if (result.code !== 0) {
+        const line = (result.stderr || result.stdout).trim().split(/\r?\n/).pop() || `exit ${result.code}`
+        return { ...base, error: line.slice(0, 240) }
+      }
+      const version = parseHarnessVersion(result.stdout || result.stderr)
+      const implementation = id === 'prime' ? classifyPrimeFromVersion(version) ?? await probePrimeImplementation(path) : undefined
+      return { ...base, version, implementation, ready: true }
+    } catch (error) {
+      return { ...base, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
 
-        try {
-          const probe = await runProcess(path, ['--version'], {
-            timeoutMs: 10_000,
-            maxBytes: 32 * 1024,
-          })
-          if (probe.timedOut) {
-            return [
-              id,
-              {
-                id,
-                name: desc.name,
-                path,
-                version: null,
-                ready: false,
-                error: '探测 --version 超时',
-                agentDir,
-                sessionRoot,
-              },
-            ]
-          }
-          if (probe.code !== 0) {
-            const errLine = (probe.stderr || probe.stdout).trim().split(/\r?\n/).pop() || `exit ${probe.code}`
-            return [
-              id,
-              {
-                id,
-                name: desc.name,
-                path,
-                version: null,
-                ready: false,
-                error: errLine.slice(0, 240),
-                agentDir,
-                sessionRoot,
-              },
-            ]
-          }
-          const version = parseHarnessVersion(probe.stdout || probe.stderr)
-          let implementation: PrimeImplementation | undefined
-          if (id === 'prime') {
-            implementation = classifyPrimeFromVersion(version) ?? (await probePrimeImplementation(path))
-          }
-          return [
-            id,
-            {
-              id,
-              name: desc.name,
-              path,
-              version,
-              implementation,
-              ready: true,
-              agentDir,
-              sessionRoot,
-            },
-          ]
-        } catch (err) {
-          return [
-            id,
-            {
-              id,
-              name: desc.name,
-              path,
-              version: null,
-              ready: false,
-              error: err instanceof Error ? err.message : String(err),
-              agentDir,
-              sessionRoot,
-            },
-          ]
-        }
-      }),
-    )
-
-    this.statuses = Object.fromEntries(entries) as Record<HarnessId, HarnessStatus>
+  async refresh(customPaths: Partial<Record<HarnessId, string>> = {}): Promise<Record<HarnessId, HarnessStatus>> {
+    await Promise.all(HARNESS_IDS.map(async (id) => {
+      const revision = this.nextRevision(id)
+      const configured = customPaths[id]
+      const preferred = configured ? await this.probe(id, configured) : undefined
+      // Previously saved paths can stop existing after an upgrade or move.
+      const status = preferred?.path ? preferred : await this.probe(id)
+      if (this.revisions.get(id) === revision) this.statuses[id] = status
+    }))
     return this.snapshot()
   }
 }

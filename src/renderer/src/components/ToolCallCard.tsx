@@ -1,12 +1,12 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Wrench, XCircle } from 'lucide-react'
 import type { ToolCallItem } from '@shared/types'
 
 const VIRTUAL_LINE_THRESHOLD = 400
-const LINE_HEIGHT = 17
 const VIRTUAL_VIEWPORT_HEIGHT = 320
 const MAX_ARGS_CHARS = 20_000
+const PREVIEW_LINES = 12
 
 function summarizeArgs(tool: ToolCallItem): string {
   const args = tool.args
@@ -23,28 +23,24 @@ function summarizeArgs(tool: ToolCallItem): string {
 }
 
 /** Renders tool output; switches to line-based virtual scrolling for huge outputs. */
-function ToolOutputView({ text }: { text: string }) {
+function ToolOutputView({ text, codeFontSize }: { text: string; codeFontSize: number }) {
   const lines = useMemo(() => text.split('\n'), [text])
+  const lineHeight = codeFontSize * 1.5
+  const [expanded, setExpanded] = useState(false)
   const parentRef = useRef<HTMLDivElement | null>(null)
-  const virtualized = lines.length > VIRTUAL_LINE_THRESHOLD
+  const virtualized = expanded && lines.length > VIRTUAL_LINE_THRESHOLD
   const virtualizer = useVirtualizer({
     count: lines.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => LINE_HEIGHT,
+    estimateSize: () => lineHeight,
     overscan: 24,
     enabled: virtualized,
   })
-
-  if (!virtualized) {
-    return <pre className="tool-pre">{text}</pre>
-  }
+  useEffect(() => { virtualizer.measure() }, [lineHeight, virtualizer])
 
   return (
     <div>
-      <div style={{ fontSize: 10.5, color: '#68768f', marginBottom: 3 }}>
-        共 {lines.length.toLocaleString()} 行 · 虚拟滚动渲染
-      </div>
-      <div ref={parentRef} className="tool-pre-virtual" style={{ height: VIRTUAL_VIEWPORT_HEIGHT }}>
+      {virtualized ? <div ref={parentRef} className="tool-pre-virtual" style={{ height: VIRTUAL_VIEWPORT_HEIGHT }}>
         <div
           style={{
             height: virtualizer.getTotalSize(),
@@ -61,21 +57,34 @@ function ToolOutputView({ text }: { text: string }) {
                 position: 'absolute',
                 top: vItem.start,
                 left: 0,
-                height: LINE_HEIGHT,
-                lineHeight: `${LINE_HEIGHT}px`,
+                height: lineHeight,
+                lineHeight: `${lineHeight}px`,
               }}
             >
               {lines[vItem.index] || ' '}
             </div>
           ))}
         </div>
-      </div>
+      </div> : <pre className="tool-pre">{expanded ? text : lines.slice(0, PREVIEW_LINES).join('\n')}</pre>}
+      {lines.length > PREVIEW_LINES && (
+        <button type="button" className="output-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? '收起输出' : `展开全部 ${lines.length.toLocaleString()} 行`}
+        </button>
+      )}
     </div>
   )
 }
 
-export function ToolCallCard({ tool }: { tool: ToolCallItem }) {
-  const [open, setOpen] = useState(tool.status === 'error')
+const toolCardOpen = new Map<string, boolean>()
+
+export function ToolCallCard({ tool, codeFontSize }: { tool: ToolCallItem; codeFontSize: number }) {
+  // An explicit user choice wins; otherwise errors auto-expand (also when a running tool fails later).
+  const [choice, setChoice] = useState<boolean | undefined>(() => toolCardOpen.get(tool.id))
+  const open = choice ?? tool.status === 'error'
+  const toggle = () => {
+    toolCardOpen.set(tool.id, !open)
+    setChoice(!open)
+  }
   const summary = summarizeArgs(tool)
   const argsText =
     tool.argsText.length > MAX_ARGS_CHARS
@@ -84,20 +93,20 @@ export function ToolCallCard({ tool }: { tool: ToolCallItem }) {
 
   return (
     <div className="tool-card">
-      <button type="button" className="tool-header" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="tool-header" aria-expanded={open} onClick={toggle}>
         <span className="tool-header-left">
           {tool.status === 'running' ? (
-            <Loader2 size={14} className="spin" color="#5b8cff" />
+            <Loader2 size={14} className="spin" color="var(--accent)" />
           ) : tool.status === 'error' ? (
-            <XCircle size={14} color="#f87171" />
+            <XCircle size={14} color="var(--danger)" />
           ) : (
-            <CheckCircle2 size={14} color="#34d399" />
+            <CheckCircle2 size={14} color="var(--success)" />
           )}
-          <Wrench size={12} color="#68768f" />
+          <Wrench size={12} color="var(--text-muted)" />
           <span className="tool-name">{tool.name}</span>
           {summary && <span className="tool-summary">{summary}</span>}
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#68768f', fontSize: 11 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 12 }}>
           {tool.durationMs !== undefined && <span>{tool.durationMs}ms</span>}
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </span>
@@ -106,16 +115,16 @@ export function ToolCallCard({ tool }: { tool: ToolCallItem }) {
         <div className="tool-body">
           {argsText && (
             <div>
-              <div style={{ fontSize: 11, color: '#68768f', marginBottom: 4 }}>参数</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>参数</div>
               <pre className="tool-pre">{argsText}</pre>
             </div>
           )}
           {tool.output && (
             <div>
-              <div style={{ fontSize: 11, color: tool.isError ? '#f87171' : '#68768f', marginBottom: 4 }}>
+              <div style={{ fontSize: 12, color: tool.isError ? 'var(--danger)' : 'var(--text-muted)', marginBottom: 4 }}>
                 {tool.isError ? '错误输出' : '执行结果'}
               </div>
-              <ToolOutputView text={tool.output} />
+              <ToolOutputView text={tool.output} codeFontSize={codeFontSize} />
             </div>
           )}
         </div>

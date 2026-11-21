@@ -1,16 +1,19 @@
 :root {
-  --bg-root: #0d1017;
-  --bg-panel: #131822;
-  --bg-elevated: #1a2130;
-  --bg-hover: #212a3d;
-  --bg-active: #253149;
-  --border: #252e40;
-  --border-strong: #34415a;
-  --text-primary: #e6ebf4;
-  --text-secondary: #9aa7bd;
-  --text-muted: #68768f;
-  --accent: #5b8cff;
-  --accent-soft: rgba(91, 140, 255, 0.16);
+  color-scheme: dark;
+  --bg-root: #18191b;
+  --bg-panel: #1e1f21;
+  --bg-elevated: #252628;
+  --bg-hover: #303234;
+  --bg-active: #343a37;
+  --bg-code: #141517;
+  --border: #303233;
+  --border-strong: #444746;
+  --text-primary: #edecea;
+  --text-secondary: #babcb9;
+  --text-muted: #929694;
+  --accent: #a7deca;
+  --accent-ink: #182a23;
+  --accent-soft: #2e3b35;
   --pi-color: #7c8cff;
   --pi-soft: rgba(124, 140, 255, 0.15);
   --omp-color: #34d399;
@@ -24,8 +27,47 @@
   --diff-add-text: #86efac;
   --diff-del-bg: rgba(239, 68, 68, 0.14);
   --diff-del-text: #fca5a5;
-  --mono: 'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+  --mono: 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  --sidebar-width: 236px;
+  --caption-height: 46px;
+  --workspace-tabs-height: 44px;
+  --conversation-width: 820px;
+  --radius-small: 8px;
+  --radius-large: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg-root: #faf9f7;
+    --bg-panel: #f0efec;
+    --bg-elevated: #e9e8e5;
+    --bg-hover: #e1e2de;
+    --bg-active: #dce8e1;
+    --bg-code: #f0efed;
+    --border: #ddded9;
+    --border-strong: #b5bab5;
+    --text-primary: #252726;
+    --text-secondary: #525854;
+    --text-muted: #636a66;
+    --accent: #236247;
+    --accent-ink: #fff;
+    --accent-soft: #e0eee5;
+    --pi-color: #4d4e9b;
+    --pi-soft: #e8e6f6;
+    --omp-color: #236247;
+    --omp-soft: #dcece5;
+    --prime-color: #77571a;
+    --prime-soft: #f5e9cd;
+    --success: #246946;
+    --warning: #805510;
+    --danger: #a8313d;
+    --diff-add-bg: #e3efe7;
+    --diff-add-text: #245d40;
+    --diff-del-bg: #f5e3e4;
+    --diff-del-text: #9a303a;
+  }
 }
 
 * {

@@ -97,6 +97,8 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
   private currentModel: string | null = null
   private thinkingLevel: ThinkingLevel
   private streaming = false
+  private compacting = false
+  private readonly pendingModelSwitch = new Map<string, { previous: string | null; next: string }>()
   private readonly blocks = new Map<number, StreamBlock>()
   private readonly toolNames = new Map<string, string>()
   private readonly approvals = new Map<string, PendingApproval>()
@@ -125,9 +127,11 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
       case 'prompt':
       case 'steer':
       case 'follow_up': {
+        const alreadyRunning = this.streaming
         await this.writeUserMessage(command, ctx)
         this.streaming = true
-        ctx.emit({ type: 'agent_start' })
+        // steer / follow_up arrive mid-run: don't restart the turn in the UI.
+        if (!alreadyRunning) ctx.emit({ type: 'agent_start' })
         ctx.respond(id, {})
         return
       }
@@ -153,6 +157,8 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
         }
         const requestId = `agentui-ctl-${++this.controlSeq}`
         this.controlRequests.set(requestId, id)
+        // Remember the previous model so a rejected switch can be rolled back.
+        this.pendingModelSwitch.set(requestId, { previous: this.currentModel, next: model })
         this.currentModel = model
         await writeJson(ctx, {
           type: 'control_request',
@@ -170,7 +176,8 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
       }
       case 'compact': {
         this.streaming = true
-        ctx.emit({ type: 'agent_start' })
+        this.compacting = true
+        ctx.emit({ type: 'compaction_start', reason: 'manual' })
         await writeJson(ctx, {
           type: 'user',
           message: { role: 'user', content: [{ type: 'text', text: '/compact' }] },
@@ -327,6 +334,10 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
         ctx.emit({ type: 'error', error: `Claude Code: ${detail}` })
       }
       this.blocks.clear()
+      if (this.compacting) {
+        this.compacting = false
+        ctx.emit({ type: 'compaction_end', result: {}, ...(isError ? { errorMessage: asString(raw.result) ?? '压缩失败' } : {}) })
+      }
       ctx.emit({ type: 'agent_end', stopReason: asString(raw.subtype) ?? 'success' })
       return
     }
@@ -343,9 +354,13 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
       const canonicalId = this.controlRequests.get(requestId)
       if (!canonicalId) return
       this.controlRequests.delete(requestId)
+      const switched = this.pendingModelSwitch.get(requestId)
+      this.pendingModelSwitch.delete(requestId)
       if (response && response.subtype === 'success') {
         ctx.respond(canonicalId, {})
       } else {
+        // Roll back the optimistic model update when Claude rejected the switch.
+        if (switched && this.currentModel === switched.next) this.currentModel = switched.previous
         ctx.respond(canonicalId, null, asString(response?.error) ?? 'Claude Code 控制请求失败')
       }
       return
@@ -354,7 +369,8 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
     if (type === 'control_cancel_request') {
       const requestId = asString(raw.request_id)
       if (requestId && this.approvals.delete(requestId)) {
-        // Approval withdrawn by the CLI; nothing to answer.
+        // Approval withdrawn by the CLI: remove the stale card from the UI.
+        ctx.emit({ type: 'extension_ui_request', method: 'dismiss', id: requestId })
       }
       return
     }
@@ -380,6 +396,7 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
   dispose(): void {
     this.approvals.clear()
     this.controlRequests.clear()
+    this.pendingModelSwitch.clear()
     this.blocks.clear()
   }
 
@@ -505,6 +522,7 @@ export class ClaudeStreamJsonBridge implements ProtocolBridge {
         method: 'confirm',
         title: `Claude 请求执行 ${toolName}`,
         message: preview,
+        command: asString(input.command) ?? asString(input.cmd) ?? asString(input.script) ?? asString(input.commandLine),
       })
       return
     }

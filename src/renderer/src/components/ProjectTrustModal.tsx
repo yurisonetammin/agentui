@@ -65,8 +65,8 @@ export function ProjectTrustModal({
           ))}
         </div>
 
-        <div style={{ color: 'var(--text-muted)', fontSize: 11.5, lineHeight: 1.6 }}>
-          高风险命令（如 rm -rf、git push --force、git reset --hard、格式化磁盘等）在任何预设下都会弹窗要求人工确认。
+        <div style={{ color: 'var(--text-muted)', fontSize: 12.5, lineHeight: 1.6 }}>
+          高风险命令会在时间线里标出，并要求人工确认。
           策略在引擎发起审批请求时生效；若引擎自身配置为静默自动执行、不发起审批，则无法在此拦截。
         </div>
 

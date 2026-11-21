@@ -443,6 +443,16 @@ export class RpcRuntime {
 
     if (type === 'extension_ui_request') {
       const method = typeof ev.method === 'string' ? ev.method : ''
+      if (method === 'dismiss' && typeof ev.id === 'string') {
+        this.callbacks.onExtensionUiRequest({
+          id: ev.id,
+          threadId: this.threadId,
+          method: 'confirm',
+          title: '',
+          dismissed: true,
+        })
+        return
+      }
       if (method === 'select' || method === 'confirm' || method === 'input' || method === 'editor') {
         const id = typeof ev.id === 'string' ? ev.id : randomUUID()
         this.callbacks.onExtensionUiRequest({
@@ -451,6 +461,7 @@ export class RpcRuntime {
           method,
           title: typeof ev.title === 'string' ? ev.title : '需要确认',
           message: typeof ev.message === 'string' ? ev.message : undefined,
+          command: typeof ev.command === 'string' ? ev.command : undefined,
           options: Array.isArray(ev.options) ? ev.options.filter((o): o is string => typeof o === 'string') : undefined,
           placeholder: typeof ev.placeholder === 'string' ? ev.placeholder : undefined,
           prefill: typeof ev.prefill === 'string' ? ev.prefill : undefined,

@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
-import { Check, GitBranch, MessageSquarePlus, Minus, Plus, RefreshCw, RotateCcw, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Check, GitBranch, MessageSquarePlus, Minus, PanelBottom, Plus, RefreshCw, RotateCcw, Trash2, X } from 'lucide-react'
 import type { GitFileChange, GitStatusSummary } from '@shared/types'
-import { TerminalPanel } from './TerminalPanel'
 import { WorkspaceFilesPanel } from './WorkspaceFilesPanel'
 
-export type WorkspacePanelTab = 'changes' | 'worktrees' | 'files' | 'terminal'
+export const WORKSPACE_TABS = [
+  ['changes', '变更'], ['files', '文件'], ['terminal', '终端'], ['browser', '浏览器'], ['worktrees', '工作树'],
+] as const
+export type WorkspacePanelTab = (typeof WORKSPACE_TABS)[number][0]
 
 function DiffLines({ diffText }: { diffText: string }) {
   if (!diffText.trim()) {
@@ -42,6 +44,11 @@ export function DiffPanel({
   repoRoot,
   status,
   activeTab,
+  selectedTurn,
+  onShowWorkingDiff,
+  browser,
+  terminalDocked,
+  onDockTerminal,
   onTabChange,
   onRefresh,
   onClose,
@@ -54,6 +61,11 @@ export function DiffPanel({
   repoRoot?: string
   status: GitStatusSummary | null
   activeTab: WorkspacePanelTab
+  selectedTurn: { threadId: string; summaryId: string } | null
+  onShowWorkingDiff: () => void
+  browser: ReactNode
+  terminalDocked: boolean
+  onDockTerminal: () => void
   onTabChange: (tab: WorkspacePanelTab) => void
   onRefresh: () => void
   onClose: () => void
@@ -70,6 +82,16 @@ export function DiffPanel({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const diffReqIdRef = useRef(0)
+  const [turnDiff, setTurnDiff] = useState<{ id: string; text: string | null } | null>(null)
+
+  useEffect(() => {
+    if (!selectedTurn) return
+    let cancelled = false
+    void window.agentui.getThreadTurnDiff(selectedTurn.threadId, selectedTurn.summaryId)
+      .catch(() => null)
+      .then((text) => { if (!cancelled) setTurnDiff({ id: selectedTurn.summaryId, text }) })
+    return () => { cancelled = true }
+  }, [selectedTurn])
 
   useEffect(() => {
     diffReqIdRef.current += 1
@@ -133,51 +155,29 @@ export function DiffPanel({
   }
 
   const stagedCount = status?.changes.filter((c) => c.staged).length ?? 0
+  const showingTurn = activeTab === 'changes' && selectedTurn !== null
 
   return (
     <aside className="diff-panel">
       <div className="panel-tabs">
-        <div className="tab-group">
-          <button
-            type="button"
-            className={`tab-btn ${activeTab === 'changes' ? 'active' : ''}`}
-            onClick={() => onTabChange('changes')}
-          >
-            变更 ({status?.changes.length ?? 0})
-          </button>
-          <button
-            type="button"
-            className={`tab-btn ${activeTab === 'worktrees' ? 'active' : ''}`}
-            onClick={() => onTabChange('worktrees')}
-          >
-            Worktrees ({status?.worktrees.length ?? 0})
-          </button>
-          <button
-            type="button"
-            className={`tab-btn ${activeTab === 'files' ? 'active' : ''}`}
-            onClick={() => onTabChange('files')}
-          >
-            文件
-          </button>
-          <button
-            type="button"
-            className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
-            onClick={() => onTabChange('terminal')}
-          >
-            终端
-          </button>
+        <div className="tab-group" role="group" aria-label="工作区面板标签">
+          {WORKSPACE_TABS.map(([tab, label]) => (
+            <button key={tab} type="button" className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
+              aria-pressed={activeTab === tab} onClick={() => onTabChange(tab)}>{label}</button>
+          ))}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {status?.branch && (
-            <span className="mono-chip" style={{ maxWidth: 130 }}>
-              <GitBranch size={11} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-              {status.branch}
-            </span>
+        <div className="panel-tab-actions">
+          {activeTab === 'terminal' && !terminalDocked && (
+            <button type="button" className="icon-btn" title="终端停靠底部" aria-label="终端停靠底部" onClick={onDockTerminal}>
+              <PanelBottom size={14} />
+            </button>
           )}
-          <button type="button" className="icon-btn" title="刷新 Git 状态" onClick={onRefresh}>
-            <RefreshCw size={13} />
-          </button>
-          <button type="button" className="icon-btn" title="收起面板" onClick={onClose}>
+          {(activeTab === 'changes' || activeTab === 'worktrees') && cwd && (
+            <button type="button" className="icon-btn" title="刷新 Git 状态" aria-label="刷新 Git 状态" onClick={onRefresh}>
+              <RefreshCw size={13} />
+            </button>
+          )}
+          <button type="button" className="icon-btn" title="收起工作区面板" aria-label="收起工作区面板" onClick={onClose}>
             <X size={14} />
           </button>
         </div>
@@ -185,9 +185,19 @@ export function DiffPanel({
 
       {error && <div className="msg-notice error" style={{ margin: '8px 10px 0' }}>{error}</div>}
 
-      {(activeTab === 'changes' || activeTab === 'worktrees') && (!status?.isRepo ? (
+      {showingTurn ? (
+        <>
+          <div className="turn-diff-header">
+            <span>回合变更</span>
+            <button type="button" className="btn-small" onClick={onShowWorkingDiff}>查看当前工作区</button>
+          </div>
+          {turnDiff?.id !== selectedTurn.summaryId ? <p className="panel-placeholder">正在读取本回合的差异…</p>
+            : turnDiff.text ? <div className="diff-viewer" key={turnDiff.id}><DiffLines diffText={turnDiff.text} /></div>
+            : <p className="panel-placeholder">本回合的差异预览已不可用。</p>}
+        </>
+      ) : (activeTab === 'changes' || activeTab === 'worktrees') && (!status?.isRepo ? (
         <div style={{ padding: 18, color: 'var(--text-muted)' }}>
-          当前目录不是 Git 仓库（{status?.error ?? cwd}）。文件与终端标签页仍可正常使用。
+          {!cwd ? '请选择一个项目。' : status ? '当前目录不是 Git 仓库。' : '正在读取 Git 状态…'}
         </div>
       ) : activeTab === 'changes' ? (
         <>
@@ -362,7 +372,7 @@ export function DiffPanel({
                     <div
                       style={{
                         fontFamily: 'var(--mono)',
-                        fontSize: 10.5,
+                        fontSize: 12.5,
                         color: 'var(--text-muted)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
@@ -407,13 +417,10 @@ export function DiffPanel({
         </div>
       ))}
 
-      {/* Keep files/terminal panels mounted so tree state and running commands survive tab switches */}
-      <div className="ws-panel-slot" style={{ display: activeTab === 'files' ? 'flex' : 'none' }}>
-        <WorkspaceFilesPanel cwd={cwd} onReferenceFile={onReferenceFile} />
+      <div className="ws-panel-slot" hidden={activeTab !== 'files'}>
+        {cwd ? <WorkspaceFilesPanel cwd={cwd} onReferenceFile={onReferenceFile} /> : <p className="panel-placeholder">请选择一个项目。</p>}
       </div>
-      <div className="ws-panel-slot" style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }}>
-        <TerminalPanel cwd={cwd} />
-      </div>
+      <div className="ws-panel-slot" hidden={activeTab !== 'browser'}>{browser}</div>
     </aside>
   )
 }

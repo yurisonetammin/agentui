@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   AlertTriangle,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  FolderGit2,
+  FolderPlus,
   GitBranch,
+  GitCompareArrows,
   GitFork,
-  Globe,
   ImagePlus,
-  Minimize2,
-  PanelRight,
+  PanelRightOpen,
   RefreshCw,
   RotateCcw,
-  Send,
+  Shield,
   Square,
+  Terminal,
   WifiOff,
   X,
   Zap,
@@ -24,7 +29,9 @@ import {
   parseBuiltinSlashCommand,
 } from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
-import { matchGlobalShortcut } from '@shared/shortcuts'
+import { matchGlobalShortcut, runningMessageAction } from '@shared/shortcuts'
+import { DEFAULT_APPEARANCE, DEFAULT_CONVERSATION, THINKING_LABELS, type AppearanceSettings, type ConversationSettings, type HarnessDefaults } from '@shared/settings'
+import { TRUST_PRESETS, TRUST_PRESET_LABELS, type TrustPreset } from '@shared/tool-policy'
 import { dequeueUiRequest, enqueueUiRequest, pruneUiRequestsForThread } from '@shared/ui-queue'
 import {
   HARNESS_IDS,
@@ -47,21 +54,60 @@ import {
   type TimelineItem,
   type WorkspaceFileEntry,
 } from '@shared/types'
-import { ComposerAutocomplete } from './components/ComposerAutocomplete'
+import brandIcon from './assets/brand-icon.png'
+import { AssistantMessage } from './components/AssistantMessage'
 import { BrowserPanel } from './components/BrowserPanel'
-import { DiffPanel, type WorkspacePanelTab } from './components/DiffPanel'
-import { ExtensionUiModal } from './components/ExtensionUiModal'
+import { CommandPalette, type PaletteEntry } from './components/CommandPalette'
+import { ComposerAutocomplete } from './components/ComposerAutocomplete'
+import { DiffPanel, WORKSPACE_TABS, type WorkspacePanelTab } from './components/DiffPanel'
+import { ExtensionUiCard } from './components/ExtensionUiCard'
 import { ForkTreeModal } from './components/ForkTreeModal'
-import { MarkdownView } from './components/MarkdownView'
 import { ProjectTrustModal } from './components/ProjectTrustModal'
-import { SettingsModal } from './components/SettingsModal'
+import { SettingsPage, SETTINGS_LINKS, settingsSectionLabel, type SettingsDestination } from './components/SettingsPage'
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { Sidebar } from './components/Sidebar'
-import { ThinkingBlock } from './components/ThinkingBlock'
-import { ToolCallCard } from './components/ToolCallCard'
+import { TerminalPanel } from './components/TerminalPanel'
+import { WorkbenchHeader } from './components/WorkbenchHeader'
 
 const MAX_IMAGES_PER_PROMPT = 4
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const PANEL_PREFS_KEY = 'agentui.workspace-panel'
+const MIN_PANEL_WIDTH = 320
+const DEFAULT_PANEL_WIDTH = 390
+const EMPTY_TIMELINE: TimelineItem[] = []
+const CONVERSATION_WIDTHS = { standard: '820px', wide: '1040px', full: 'none' } as const
+const COMPACT_TRUST_LABELS: Record<TrustPreset, string> = {
+  readonly: '只读', approval: '需审批', auto: '自动',
+}
+
+function panelWidthLimit(viewportWidth: number) {
+  return Math.max(MIN_PANEL_WIDTH, Math.min(680, viewportWidth - 650))
+}
+
+function readPanelPreferences() {
+  try {
+    const prefs = JSON.parse(localStorage.getItem(PANEL_PREFS_KEY) ?? '{}')
+    return {
+      tab: WORKSPACE_TABS.find(([tab]) => tab === prefs.tab)?.[0] ?? 'changes',
+      width: typeof prefs.width === 'number' && Number.isFinite(prefs.width)
+        ? Math.max(MIN_PANEL_WIDTH, Math.min(680, prefs.width)) : DEFAULT_PANEL_WIDTH,
+      open: prefs.open === true,
+      terminalDocked: prefs.terminalDocked === true,
+    } as const
+  } catch {
+    return { tab: 'changes', width: DEFAULT_PANEL_WIDTH, open: false, terminalDocked: false } as const
+  }
+}
+
+function AttachmentPreview({ image, onOpen }: { image: ImageAttachment; onOpen: () => void }) {
+  const src = `data:${image.mimeType};base64,${image.data}`
+  return (
+    <button type="button" className="attachment-preview" title="打开图片预览" onClick={onOpen}>
+      <img src={src} alt={image.name ?? '附加图片'} />
+      <img src={src} alt="" aria-hidden="true" className="attachment-hover" />
+    </button>
+  )
+}
 
 function readImageAsAttachment(file: File): Promise<ImageAttachment> {
   return new Promise((resolveFile, rejectFile) => {
@@ -107,13 +153,26 @@ export function App() {
   const [timelines, setTimelines] = useState<Record<string, TimelineItem[]>>({})
   const [contextUsages, setContextUsages] = useState<Record<string, ContextUsageInfo>>({})
   const [catalogs, setCatalogs] = useState<Partial<Record<HarnessId, ModelCatalogResult>>>({})
+  const [catalogLoading, setCatalogLoading] = useState<Partial<Record<HarnessId, boolean>>>({})
+  const [appearance, setAppearance] = useState(DEFAULT_APPEARANCE)
+  const [conversation, setConversation] = useState(DEFAULT_CONVERSATION)
+  const [defaultProjectTrust, setDefaultProjectTrust] = useState<TrustPreset>('approval')
+  const [harnessDefaults, setHarnessDefaults] = useState<Partial<Record<HarnessId, HarnessDefaults>>>({})
   const [cliSessions, setCliSessions] = useState<CliSessionSummary[]>([])
-  const [gitStatus, setGitStatus] = useState<GitStatusSummary | null>(null)
-  const [showDiffPanel, setShowDiffPanel] = useState(true)
-  const [diffPanelTab, setDiffPanelTab] = useState<WorkspacePanelTab>('changes')
+  const [gitSnapshot, setGitSnapshot] = useState<{ cwd: string; status: GitStatusSummary | null } | null>(null)
+  const [selectedTurn, setSelectedTurn] = useState<{ threadId: string; summaryId: string } | null>(null)
+  const [initialPanel] = useState(readPanelPreferences)
+  const [showDiffPanel, setShowDiffPanel] = useState(initialPanel.open)
+  const [diffPanelTab, setDiffPanelTab] = useState<WorkspacePanelTab>(initialPanel.tab)
+  const [panelWidth, setPanelWidth] = useState(initialPanel.width)
+  const [panelWidthLimitPx, setPanelWidthLimitPx] = useState(() => panelWidthLimit(window.innerWidth))
+  const [panelResizing, setPanelResizing] = useState(false)
+  const [terminalDocked, setTerminalDocked] = useState(initialPanel.terminalDocked)
+  const [browserVisited, setBrowserVisited] = useState(initialPanel.open && initialPanel.tab === 'browser')
+  const [showPalette, setShowPalette] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsDestination, setSettingsDestination] = useState<SettingsDestination>({ section: 'engines' })
   const [trustProjectId, setTrustProjectId] = useState<string | null>(null)
-  const [showBrowserPanel, setShowBrowserPanel] = useState(false)
   const [browserShotBusy, setBrowserShotBusy] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showForkModal, setShowForkModal] = useState(false)
@@ -125,7 +184,7 @@ export function App() {
   const [statusTexts, setStatusTexts] = useState<Record<string, string | null>>({})
   const [disconnectInfos, setDisconnectInfos] = useState<Record<string, RuntimeDisconnectInfo | null>>({})
   const [dismissedDisconnectAt, setDismissedDisconnectAt] = useState<Record<string, number>>({})
-  const [showStderrDetail, setShowStderrDetail] = useState(false)
+  const [showDisconnectDetails, setShowDisconnectDetails] = useState(false)
   const [reconnectingThreadId, setReconnectingThreadId] = useState<string | null>(null)
   const [promptText, setPromptText] = useState('')
   const [composerCursor, setComposerCursor] = useState(0)
@@ -138,13 +197,20 @@ export function App() {
   const [acSelectedIndex, setAcSelectedIndex] = useState(0)
   const [acDismissedKey, setAcDismissedKey] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [draftModel, setDraftModel] = useState<{ harness: HarnessId; value: string } | null>(null)
+  const [draftThinking, setDraftThinking] = useState<{ harness: HarnessId; value: ThinkingLevel } | null>(null)
 
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
-  const filterInputRef = useRef<HTMLInputElement | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const fileReqIdRef = useRef(0)
+  const gitReqIdRef = useRef(0)
+  const catalogRequests = useRef<Partial<Record<HarnessId, number>>>({})
+  const settingsReturnFocus = useRef<HTMLElement | null>(null)
+  const sendMenuRef = useRef<HTMLDetailsElement>(null)
+  const creatingDraftThreadRef = useRef(false)
+  const panelDragRef = useRef<{ x: number; width: number } | null>(null)
 
   const activeThread = useMemo(
     () => threads.find((t) => t.id === activeThreadId) ?? null,
@@ -155,11 +221,25 @@ export function App() {
     () => projects.find((p) => p.id === (activeThread?.projectId ?? activeProjectId)) ?? null,
     [projects, activeThread, activeProjectId],
   )
+  const recentProjects = useMemo(() => {
+    const activity = new Map(projects.map((project) => [project.id, project.addedAt]))
+    for (const thread of threads) {
+      const last = activity.get(thread.projectId)
+      if (last !== undefined && thread.updatedAt > last) activity.set(thread.projectId, thread.updatedAt)
+    }
+    return [...projects].sort((a, b) => activity.get(b.id)! - activity.get(a.id)!).slice(0, 4)
+  }, [projects, threads])
 
   const effectiveHarness: HarnessId = activeThread?.harness ?? activeHarness
   const effectiveCwd = activeThread?.cwd ?? activeProject?.path ?? null
   const activeCatalog = catalogs[effectiveHarness]
-  const activeTimeline = activeThread ? timelines[activeThread.id] ?? [] : []
+  const newSessionDefaults = harnessDefaults[effectiveHarness]
+  const selectedDraftModel = draftModel?.harness === effectiveHarness ? draftModel.value : undefined
+  const selectedDraftThinking = draftThinking?.harness === effectiveHarness ? draftThinking.value : undefined
+  const activeTimeline = (activeThread && timelines[activeThread.id]) || EMPTY_TIMELINE
+  const gitStatus = gitSnapshot?.cwd === effectiveCwd ? gitSnapshot.status : null
+  const pendingForThread = pendingUiQueue.filter((request) => request.threadId === activeThreadId)
+  const activePendingUi = pendingForThread[0]
 
   // Virtualized timeline: only visible items are mounted; heights are measured
   // dynamically so streaming growth and long tool outputs stay smooth.
@@ -173,7 +253,8 @@ export function App() {
   const isStreaming =
     activeThread?.status === 'streaming' ||
     activeThread?.status === 'starting' ||
-    activeThread?.status === 'compacting'
+    activeThread?.status === 'compacting' ||
+    activeThread?.status === 'waiting_ui' || Boolean(activePendingUi)
 
   const activeTrigger = useMemo(
     () => detectComposerTrigger(promptText, composerCursor),
@@ -188,28 +269,66 @@ export function App() {
   const activeAcCount = activeTrigger?.kind === 'file' ? fileSuggestions.length : filteredSlashCommands.length
 
   const refreshGit = useCallback(async (cwd?: string) => {
+    const requestId = ++gitReqIdRef.current
     if (!cwd) {
-      setGitStatus(null)
+      setGitSnapshot(null)
       return
     }
     const status = await window.agentui.gitGetStatus(cwd).catch(() => null)
-    setGitStatus(status)
+    if (requestId === gitReqIdRef.current) setGitSnapshot({ cwd, status })
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANEL_PREFS_KEY, JSON.stringify({ tab: diffPanelTab, width: panelWidth, open: showDiffPanel, terminalDocked }))
+    } catch { /* Window preferences are optional. */ }
+  }, [diffPanelTab, panelWidth, showDiffPanel, terminalDocked])
+
+  useEffect(() => {
+    function resize() { setPanelWidthLimitPx(panelWidthLimit(window.innerWidth)) }
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [])
+
+  useEffect(() => {
+    if (showDiffPanel && diffPanelTab === 'browser') setBrowserVisited(true)
+  }, [showDiffPanel, diffPanelTab])
+
+  useEffect(() => {
+    function closeSendMenu(event: PointerEvent) {
+      const menu = sendMenuRef.current
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false
+    }
+    document.addEventListener('pointerdown', closeSendMenu)
+    return () => document.removeEventListener('pointerdown', closeSendMenu)
   }, [])
 
   const loadModelCatalog = useCallback(async (harness: HarnessId, refresh = false) => {
-    const res = await window.agentui.getModelCatalog(harness, refresh)
-    setCatalogs((prev) => ({ ...prev, [harness]: res }))
+    const request = (catalogRequests.current[harness] ?? 0) + 1
+    catalogRequests.current[harness] = request
+    setCatalogLoading((prev) => ({ ...prev, [harness]: true }))
+    const res = await window.agentui.getModelCatalog(harness, refresh).catch((err: unknown): ModelCatalogResult => ({
+      harness, models: [], warning: String(err), fetchedAt: Date.now(),
+    }))
+    if (catalogRequests.current[harness] === request) {
+      setCatalogs((prev) => ({ ...prev, [harness]: res }))
+      setCatalogLoading((prev) => ({ ...prev, [harness]: false }))
+    }
   }, [])
 
   useEffect(() => {
     void (async () => {
       const [state, hStatuses] = await Promise.all([
         window.agentui.getState(),
-        window.agentui.discoverHarnesses(true),
+        window.agentui.discoverHarnesses(false),
       ])
       setProjects(state.projects)
       setThreads(state.threads)
       setCustomPaths(state.customBinaryPaths)
+      setAppearance(state.appearance)
+      setConversation(state.conversation)
+      setDefaultProjectTrust(state.defaultProjectTrust)
+      setHarnessDefaults(state.harnessDefaults)
       setActiveHarness(state.activeHarness)
       setActiveProjectId(state.activeProjectId)
       setActiveThreadId(state.activeThreadId)
@@ -227,18 +346,17 @@ export function App() {
   }, [loadModelCatalog])
 
   useEffect(() => {
-    if (!activeThread) {
-      setGitStatus(null)
-      return
-    }
-    if (!timelines[activeThread.id]) {
+    if (activeThread && !timelines[activeThread.id]) {
       const targetId = activeThread.id
       void window.agentui.getThreadTimeline(targetId).then((items) => {
         setTimelines((prev) => ((prev[targetId]?.length ?? 0) > 0 ? prev : { ...prev, [targetId]: items }))
       })
     }
-    void refreshGit(activeThread.cwd)
-  }, [activeThread?.id, activeThread?.cwd, refreshGit])
+  }, [activeThread?.id])
+
+  useEffect(() => {
+    void refreshGit(effectiveCwd ?? undefined)
+  }, [effectiveCwd, refreshGit])
 
   useEffect(() => {
     const unsubEvent = window.agentui.onThreadEvent(({ threadId, event }) => {
@@ -268,6 +386,7 @@ export function App() {
                 modelProvider: update.modelProvider !== undefined ? update.modelProvider : t.modelProvider,
                 modelId: update.modelId !== undefined ? update.modelId : t.modelId,
                 thinkingLevel: update.thinkingLevel ?? t.thinkingLevel,
+                updatedAt: update.updatedAt ?? t.updatedAt,
               }
             : t,
         ),
@@ -292,7 +411,7 @@ export function App() {
     })
 
     const unsubUi = window.agentui.onExtensionUiRequest((req) => {
-      setPendingUiQueue((prev) => enqueueUiRequest(prev, req))
+      setPendingUiQueue((prev) => (req.dismissed ? dequeueUiRequest(prev, req.id) : enqueueUiRequest(prev, req)))
     })
 
     return () => {
@@ -303,7 +422,7 @@ export function App() {
   }, [activeThreadId, activeThread?.cwd, refreshGit])
 
   useEffect(() => {
-    setShowStderrDetail(false)
+    setShowDisconnectDetails(false)
     setAttachedImages([])
   }, [activeThreadId])
 
@@ -362,14 +481,14 @@ export function App() {
   }, [activeThreadId])
 
   useEffect(() => {
-    if (!stickToBottomRef.current) return
+    if (showSettings || !stickToBottomRef.current) return
     const el = timelineScrollRef.current
     if (!el) return
     const raf = requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight
     })
     return () => cancelAnimationFrame(raf)
-  }, [activeTimeline, activeThreadId])
+  }, [activeTimeline, activeThreadId, activePendingUi?.id, showSettings])
 
   async function handleAddProject() {
     setActionError(null)
@@ -406,6 +525,7 @@ export function App() {
   }
 
   async function handleSwitchComposerHarness(nextHarness: HarnessId) {
+    if (nextHarness === effectiveHarness) return
     setActiveHarness(nextHarness)
     void window.agentui.setActiveHarness(nextHarness)
     if (!catalogs[nextHarness]) void loadModelCatalog(nextHarness, false)
@@ -432,6 +552,157 @@ export function App() {
       activeThread?.cwd ?? activeProject.path,
       activeThread?.worktreeBranch ?? undefined,
     )
+  }
+
+  function reportError(error: unknown) {
+    setActionError(error instanceof Error ? error.message : String(error))
+  }
+
+  function openSettings(destination?: SettingsDestination) {
+    if (!showSettings) settingsReturnFocus.current = document.activeElement as HTMLElement | null
+    if (destination) setSettingsDestination(destination)
+    setShowShortcuts(false)
+    setShowSettings(true)
+  }
+
+  function closeSettings() {
+    setShowSettings(false)
+    requestAnimationFrame(() => {
+      const previous = settingsReturnFocus.current
+      if (previous?.isConnected && previous !== document.body) previous.focus()
+      else composerRef.current?.focus()
+    })
+  }
+
+  async function saveAppearance(patch: Partial<AppearanceSettings>) {
+    setAppearance(await window.agentui.setAppearance(patch))
+  }
+
+  async function saveConversation(patch: Partial<ConversationSettings>) {
+    setConversation(await window.agentui.setConversationSettings(patch))
+  }
+
+  async function saveDefaultProjectTrust(preset: TrustPreset) {
+    setDefaultProjectTrust(await window.agentui.setDefaultProjectTrust(preset))
+  }
+
+  async function saveHarnessDefaults(harness: HarnessId, defaults: HarnessDefaults) {
+    const saved = await window.agentui.setHarnessDefaults(harness, defaults)
+    setHarnessDefaults((prev) => ({ ...prev, [harness]: saved }))
+  }
+
+  async function refreshHarnessSettings() {
+    const next = await window.agentui.discoverHarnesses(true)
+    setHarnesses(next)
+    for (const harness of HARNESS_IDS) void loadModelCatalog(harness, true)
+  }
+
+  async function saveEnginePath(harness: HarnessId, path: string | null) {
+    const next = await window.agentui.setCustomBinaryPath(harness, path)
+    setHarnesses(next)
+    setCustomPaths((prev) => {
+      const copy = { ...prev }
+      if (path) copy[harness] = path
+      else delete copy[harness]
+      return copy
+    })
+    setCatalogs((prev) => ({ ...prev, [harness]: undefined }))
+    void loadModelCatalog(harness, true)
+  }
+
+  function selectThread(threadId: string) {
+    setActionError(null)
+    setActiveThreadId(threadId)
+    void window.agentui.setActiveThread(threadId).catch(reportError)
+  }
+
+  function startDraft(projectId = activeProject?.id ?? activeProjectId) {
+    setActionError(null)
+    setShowDisconnectDetails(false)
+    setActiveThreadId(null)
+    setActiveProjectId(projectId)
+    if (activeThread && activeHarness !== effectiveHarness) {
+      setActiveHarness(effectiveHarness)
+      void window.agentui.setActiveHarness(effectiveHarness).catch(reportError)
+    }
+    setPromptText('')
+    setComposerCursor(0)
+    setAttachedImages([])
+    setDraftModel(null)
+    setDraftThinking(null)
+    void window.agentui.setActiveThread(null).catch(reportError)
+    void window.agentui.setActiveProject(projectId).catch(reportError)
+    requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
+  async function saveProjectTrust(projectId: string, preset: TrustPreset) {
+    const updated = await window.agentui.setProjectTrust(projectId, preset)
+    setProjects((prev) => prev.map((project) => project.id === updated.id ? updated : project))
+  }
+
+  function stopCurrentTurn() {
+    if (!activeThread) return
+    const threadId = activeThread.id
+    void window.agentui.abortThread(threadId)
+      .then(() => setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, threadId)))
+      .catch(reportError)
+  }
+
+  function openWorkspaceTab(tab: WorkspacePanelTab, terminalPlacement = appearance.terminalPlacement) {
+    setSelectedTurn(null)
+    if (tab === 'terminal') {
+      if (terminalPlacement === 'bottom') {
+        dockTerminal()
+        return
+      }
+      setTerminalDocked(false)
+    }
+    setDiffPanelTab(tab)
+    setShowDiffPanel(true)
+  }
+
+  function dockTerminal() {
+    setTerminalDocked(true)
+    if (diffPanelTab === 'terminal') setDiffPanelTab('changes')
+  }
+
+  function toggleWorkspaceTool(tab: WorkspacePanelTab) {
+    if (tab === 'terminal' && terminalDocked) {
+      setTerminalDocked(false)
+      return
+    }
+    if (showDiffPanel && (tab === diffPanelTab || (tab === 'changes' && diffPanelTab === 'worktrees'))) {
+      setShowDiffPanel(false)
+    } else openWorkspaceTab(tab)
+  }
+
+  function adjustPanelWidth(width: number) {
+    setPanelWidth(Math.max(MIN_PANEL_WIDTH, Math.min(panelWidthLimitPx, Math.round(width))))
+  }
+
+  function attachBrowserScreenshot() {
+    if (browserShotBusy) return
+    if (attachedImages.length >= MAX_IMAGES_PER_PROMPT) {
+      setActionError(`单条消息最多附加 ${MAX_IMAGES_PER_PROMPT} 张图片`)
+      return
+    }
+    setBrowserShotBusy(true)
+    void window.agentui.browserScreenshot().then((shot) => {
+      const sizeBytes = Math.floor(shot.data.length * 0.75)
+      if (sizeBytes > MAX_IMAGE_BYTES) {
+        setActionError('截图超过 10MB 限制，无法附加')
+        return
+      }
+      setAttachedImages((prev) => [...prev, {
+        id: `browser-shot-${Date.now()}`,
+        type: 'image' as const,
+        data: shot.data,
+        mimeType: shot.mimeType,
+        name: `browser-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.png`,
+        sizeBytes,
+      }].slice(0, MAX_IMAGES_PER_PROMPT))
+      composerRef.current?.focus()
+    }).catch(reportError).finally(() => setBrowserShotBusy(false))
   }
 
   async function addImageFiles(fileList: FileList | File[]) {
@@ -543,15 +814,13 @@ export function App() {
           if (activeProject) await handleNewThread(activeProject.id, effectiveHarness)
           else await handleAddProject()
         } else if (builtin.type === 'diff') {
-          setDiffPanelTab('changes')
-          setShowDiffPanel(true)
+          openWorkspaceTab('changes')
         } else if (builtin.type === 'worktree') {
-          setDiffPanelTab('worktrees')
-          setShowDiffPanel(true)
+          openWorkspaceTab('worktrees')
         } else if (builtin.type === 'shortcuts') {
           setShowShortcuts(true)
         } else if (builtin.type === 'settings') {
-          setShowSettings(true)
+          openSettings()
         } else if (builtin.type === 'fork') {
           await openForkModal('tree')
         } else if (builtin.type === 'clone') {
@@ -593,9 +862,25 @@ export function App() {
         setActionError('请先在左侧添加一个本地项目目录')
         return
       }
-      targetThread = await window.agentui.createThread({ projectId: activeProject.id, harness: activeHarness })
-      setThreads((prev) => [targetThread!, ...prev])
-      setActiveThreadId(targetThread.id)
+      if (creatingDraftThreadRef.current) return
+      creatingDraftThreadRef.current = true
+      try {
+        const [modelProvider, modelId] = (selectedDraftModel ?? '').split('::')
+        const created = await window.agentui.createThread({
+          projectId: activeProject.id,
+          harness: activeHarness,
+          ...(selectedDraftModel !== undefined ? { modelProvider: modelId ? modelProvider : null, modelId: modelId || null } : {}),
+          thinkingLevel: selectedDraftThinking,
+        })
+        targetThread = created
+        setThreads((prev) => [created, ...prev])
+        setActiveThreadId(created.id)
+      } catch (error) {
+        reportError(error)
+        return
+      } finally {
+        creatingDraftThreadRef.current = false
+      }
     }
 
     const msg = promptText
@@ -705,15 +990,11 @@ export function App() {
   const currentModelValue =
     activeThread?.modelProvider && activeThread?.modelId
       ? `${activeThread.modelProvider}::${activeThread.modelId}`
-      : ''
+      : !activeThread ? selectedDraftModel ?? (newSessionDefaults?.model
+        ? `${newSessionDefaults.model.provider}::${newSessionDefaults.model.id}` : '') : ''
 
   const currentCtxUsage = activeThread ? contextUsages[activeThread.id] : undefined
   const currentStatusText = activeThread ? statusTexts[activeThread.id] : null
-  const activePendingUi = pendingUiQueue[0] ?? null
-  const activePendingThread = activePendingUi
-    ? threads.find((t) => t.id === activePendingUi.threadId) ?? null
-    : null
-
   const activeDisconnectInfo = activeThread ? disconnectInfos[activeThread.id] ?? null : null
   const disconnectReason = activeDisconnectInfo?.reason ?? activeThread?.lastError ?? null
   const disconnectMarker = activeDisconnectInfo?.disconnectedAt ?? (activeThread?.updatedAt ?? 0)
@@ -724,6 +1005,33 @@ export function App() {
       disconnectReason &&
       dismissedDisconnectAt[activeThread.id] !== disconnectMarker,
   )
+  const showStartup = !activeTimeline.length && !activePendingUi && !isStreaming && !showDisconnectBanner
+  const currentPanelWidth = Math.min(panelWidth, panelWidthLimitPx)
+  const showTerminalAtRight = showDiffPanel && diffPanelTab === 'terminal' && !terminalDocked
+  const hasDraft = Boolean(promptText.trim() || attachedImages.length)
+  const trustPreset = activeProject?.trustPreset ?? 'approval'
+
+  const settingsEntries: PaletteEntry[] = showPalette ? SETTINGS_LINKS.map((entry) => ({
+    id: `setting-${entry.label}`, label: entry.label, detail: settingsSectionLabel(entry.section),
+    keywords: entry.keywords, group: '设置', run: () => openSettings(entry),
+  })) : []
+  const paletteEntries: PaletteEntry[] = showPalette && !showSettings ? [
+    ...[...threads].sort((a, b) => b.updatedAt - a.updatedAt).map((thread): PaletteEntry => ({
+      id: thread.id, label: thread.title, detail: `${projects.find((p) => p.id === thread.projectId)?.name ?? ''} · ${HARNESS_LABELS[thread.harness]}`,
+      keywords: `${thread.cwd} ${thread.worktreeBranch ?? ''}`, group: '会话', run: () => selectThread(thread.id),
+    })),
+    ...HARNESS_IDS.map((harness): PaletteEntry => ({
+      id: `engine-${harness}`, label: `切换到 ${HARNESS_LABELS[harness]}`, group: '引擎',
+      detail: harnesses[harness]?.ready ? '就绪' : '未就绪', run: () => void handleSwitchComposerHarness(harness),
+    })),
+    ...WORKSPACE_TABS.map(([tab, label]): PaletteEntry => ({
+      id: tab, label: `打开${label}面板`, keywords: tab, group: '工作区', run: () => openWorkspaceTab(tab),
+    })),
+    { id: 'terminal-dock', label: '打开底部终端', keywords: 'terminal dock', group: '工作区', run: dockTerminal },
+    { id: 'new-draft', label: '新建会话', group: '会话', run: () => startDraft() },
+    { id: 'add-project', label: '添加项目', group: '工作区', run: () => void handleAddProject() },
+    ...settingsEntries,
+  ] : settingsEntries
 
   const shortcutCtxRef = useRef<{
     onShortcut: (action: ReturnType<typeof matchGlobalShortcut>, e: KeyboardEvent) => void
@@ -735,6 +1043,7 @@ export function App() {
 
     if (action === 'escape') {
       if (targetEl?.classList?.contains('inline-rename-input')) return
+      if (showPalette) return
       if (previewImage) {
         e.preventDefault()
         setPreviewImage(null)
@@ -752,48 +1061,47 @@ export function App() {
       }
       if (showSettings) {
         e.preventDefault()
-        setShowSettings(false)
+        closeSettings()
+        return
+      }
+      if (trustProjectId) {
+        e.preventDefault()
+        setTrustProjectId(null)
+        return
+      }
+      if (sendMenuRef.current?.open) {
+        e.preventDefault()
+        sendMenuRef.current.open = false
+        sendMenuRef.current.querySelector('summary')?.focus()
         return
       }
       if (showAutocomplete) return
       if (activePendingUi) return
       if (isStreaming && activeThread) {
         e.preventDefault()
-        void window.agentui
-          .abortThread(activeThread.id)
-          .then(() => {
-            setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, activeThread.id))
-          })
-          .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+        stopCurrentTurn()
       }
       return
     }
 
-    if (activePendingUi) return
+    if (showPalette && action !== 'open-palette') return
+    if (showSettings && action !== 'open-palette' && action !== 'toggle-settings') return
 
     e.preventDefault()
     if (action === 'new-thread') {
-      if (activeProject) {
-        void handleNewThread(activeProject.id, effectiveHarness)
-      } else {
-        void handleAddProject()
-      }
-    } else if (action === 'focus-filter') {
-      filterInputRef.current?.focus()
-      filterInputRef.current?.select()
+      startDraft()
+    } else if (action === 'open-palette') {
+      setShowPalette((open) => !open)
     } else if (action === 'focus-composer') {
       composerRef.current?.focus()
     } else if (action === 'toggle-diff') {
-      setShowDiffPanel((v) => !v)
+      toggleWorkspaceTool('changes')
     } else if (action === 'open-worktrees') {
-      setDiffPanelTab('worktrees')
-      setShowDiffPanel(true)
+      openWorkspaceTab('worktrees')
     } else if (action === 'open-files') {
-      setDiffPanelTab('files')
-      setShowDiffPanel(true)
+      openWorkspaceTab('files')
     } else if (action === 'open-terminal') {
-      setDiffPanelTab('terminal')
-      setShowDiffPanel(true)
+      if (!terminalDocked) openWorkspaceTab('terminal')
     } else if (action === 'switch-pi') {
       void handleSwitchComposerHarness('pi')
     } else if (action === 'switch-omp') {
@@ -801,8 +1109,8 @@ export function App() {
     } else if (action === 'switch-prime') {
       void handleSwitchComposerHarness('prime')
     } else if (action === 'toggle-settings') {
-      setShowShortcuts(false)
-      setShowSettings((v) => !v)
+      if (showSettings) closeSettings()
+      else openSettings()
     } else if (action === 'toggle-shortcuts') {
       setShowSettings(false)
       setShowShortcuts((v) => !v)
@@ -833,14 +1141,7 @@ export function App() {
             {item.images && item.images.length > 0 && (
               <div className="msg-user-images">
                 {item.images.map((img) => (
-                  <img
-                    key={img.id}
-                    src={`data:${img.mimeType};base64,${img.data}`}
-                    alt={img.name ?? 'image'}
-                    className="msg-user-image"
-                    title="点击放大查看"
-                    onClick={() => setPreviewImage(img)}
-                  />
+                  <AttachmentPreview key={img.id} image={img} onOpen={() => setPreviewImage(img)} />
                 ))}
               </div>
             )}
@@ -850,7 +1151,7 @@ export function App() {
             <button
               type="button"
               className="btn-small"
-              style={{ padding: '2px 7px', fontSize: 10.5 }}
+              style={{ padding: '2px 7px', fontSize: 12.5 }}
               title="从此条提问分叉出新分支进行多方案对比"
               onClick={() => void openForkModal('tree', item.text)}
             >
@@ -862,728 +1163,534 @@ export function App() {
       )
     }
     if (item.role === 'notice') {
+      if (item.details) return (
+        <details className={`msg-notice notice-details ${item.kind}`}>
+          <summary>{item.text}</summary>
+          <p>{item.details}</p>
+        </details>
+      )
       return <div className={`msg-notice ${item.kind}`}>{item.text}</div>
     }
-    return (
-      <div className="msg-assistant">
-        {item.parts.map((part, idx) => {
-          if (part.type === 'thinking') {
-            return <ThinkingBlock key={idx} text={part.text} streaming={item.streaming} />
-          }
-          if (part.type === 'tool') {
-            const tool = item.toolCalls[part.toolCallId]
-            if (!tool) return null
-            return <ToolCallCard key={part.toolCallId} tool={tool} />
-          }
-          return <MarkdownView key={idx} content={part.text} />
-        })}
-        {item.errorMessage && <div className="msg-notice error">{item.errorMessage}</div>}
-        <div className="msg-meta">
-          {item.streaming && <span>输出中...</span>}
-          {item.model && <span>{item.model}</span>}
-          {item.usage && (
-            <span>
-              tokens: {item.usage.totalTokens.toLocaleString()}
-              {item.usage.costTotal ? ` · $${item.usage.costTotal.toFixed(4)}` : ''}
-            </span>
-          )}
-        </div>
-      </div>
-    )
+    if (item.role === 'change-summary') {
+      return (
+        <button type="button" className="turn-changes" title="查看本回合的文件差异"
+          onClick={() => {
+            if (!activeThreadId) return
+            openWorkspaceTab('changes')
+            setSelectedTurn({ threadId: activeThreadId, summaryId: item.id })
+          }}>
+          <GitCompareArrows size={15} /><span>变更了 {item.changes.files} 个文件</span>
+          <span className="turn-changes-added">+{item.changes.added}</span>
+          <span className="turn-changes-removed">−{item.changes.removed}</span>
+          <ChevronRight size={13} />
+        </button>
+      )
+    }
+    return <AssistantMessage item={item} codeFontSize={appearance.codeFontSize} collapseToolGroups={conversation.collapseToolGroups} />
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar
-        harnesses={harnesses}
-        activeHarness={effectiveHarness}
-        projects={projects}
-        threads={threads}
-        activeProjectId={activeProject?.id ?? null}
-        activeThreadId={activeThreadId}
-        cliSessions={cliSessions}
-        onSelectHarness={(id) => void handleSwitchComposerHarness(id)}
-        onRefreshHarnesses={() =>
-          void window.agentui.discoverHarnesses(true).then((res) => {
-            setHarnesses(res)
-            for (const id of HARNESS_IDS) {
-              if (res[id]?.ready) void loadModelCatalog(id, true)
-            }
-          })
-        }
-        onOpenShortcuts={() => setShowShortcuts(true)}
-        onOpenSettings={() => setShowSettings(true)}
-        filterInputRef={filterInputRef}
-        onAddProject={() => void handleAddProject()}
-        onRemoveProject={(id) => {
-          const removedIds = new Set(threads.filter((t) => t.projectId === id).map((t) => t.id))
-          void window.agentui
-            .removeProject(id)
-            .then(() => {
-              setProjects((prev) => prev.filter((p) => p.id !== id))
-              setThreads((prev) => prev.filter((t) => t.projectId !== id))
-              setPendingUiQueue((prev) => prev.filter((item) => !removedIds.has(item.threadId)))
-            })
-            .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+    <div className="app-shell" data-reduce-motion={appearance.reduceMotion || undefined}
+      style={{ '--conversation-width': CONVERSATION_WIDTHS[appearance.conversationWidth], '--code-font-size': `${appearance.codeFontSize}px` } as CSSProperties}>
+      <WorkbenchHeader
+        thread={activeThread} harness={effectiveHarness} ready={harnesses[effectiveHarness]?.ready ?? false}
+        cwd={effectiveCwd} context={currentCtxUsage} statusText={currentStatusText}
+        activeTool={showDiffPanel ? diffPanelTab : null} terminalDocked={terminalDocked}
+        onToggleTool={toggleWorkspaceTool} onOpenPalette={() => setShowPalette(true)}
+        onCloseSettings={showSettings ? closeSettings : undefined}
+        onFork={() => void openForkModal('tree')}
+        onCompact={() => {
+          if (activeThread) void window.agentui.compactThread(activeThread.id).catch(reportError)
         }}
-        onNewThread={(pid, harness) => void handleNewThread(pid, harness)}
-        onOpenTrust={(pid) => setTrustProjectId(pid)}
-        onSelectThread={(tid) => {
-          setActiveThreadId(tid)
-          void window.agentui.setActiveThread(tid)
-        }}
-        onDeleteThread={(tid) =>
-          void window.agentui
-            .deleteThread(tid)
-            .then(() => {
-              setThreads((prev) => prev.filter((t) => t.id !== tid))
-              setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, tid))
-              if (activeThreadId === tid) setActiveThreadId(null)
-            })
-            .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
-        }
-        onRenameThread={(tid, title) =>
-          void window.agentui
-            .updateThreadMeta(tid, { title })
-            .then((updated) => {
-              setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
-            })
-            .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
-        }
-        onResumeCliSession={(s) => void handleResumeCliSession(s)}
-        onRefreshCliSessions={() => void window.agentui.listCliSessions().then(setCliSessions)}
       />
-
-      <main className="main-pane">
-        <header className="topbar">
-          <div className="topbar-left">
-            <span className={`harness-tag tag-${effectiveHarness}`}>
-              {HARNESS_LABELS[effectiveHarness]}
-              {harnesses[effectiveHarness]?.version ? ` ${harnesses[effectiveHarness].version}` : ''}
-            </span>
-            <span className="topbar-title">{activeThread?.title ?? 'AgentUI 工作台'}</span>
-            {activeThread?.cwd && (
-              <span className="mono-chip" title={activeThread.cwd}>
-                {activeThread.worktreeBranch ? `⎇ ${activeThread.worktreeBranch} · ` : ''}
-                {activeThread.cwd}
-              </span>
-            )}
-            {currentStatusText && (
-              <span className="mono-chip status-chip" title={currentStatusText}>
-                {currentStatusText}
-              </span>
-            )}
-          </div>
-
-          <div className="topbar-right">
-            {currentCtxUsage && (
-              <span className="mono-chip" title="上下文窗口使用量">
-                {currentCtxUsage.tokens?.toLocaleString() ?? '?'} / {currentCtxUsage.contextWindow.toLocaleString()}
-                {currentCtxUsage.percent !== null ? ` (${currentCtxUsage.percent}%)` : ''}
-              </span>
-            )}
-            {activeThread && (
-              <>
-                <button
-                  type="button"
-                  className="btn-small"
-                  title="查看会话分叉树与多方案对比 (/fork)"
-                  onClick={() => void openForkModal('tree')}
-                >
-                  <GitFork size={12} />
-                  分叉 / 对比
-                </button>
-                <button
-                  type="button"
-                  className="btn-small"
-                  title="压缩当前上下文 (/compact)"
-                  onClick={() => void window.agentui.compactThread(activeThread.id).catch((e) => setActionError(String(e)))}
-                >
-                  <Minimize2 size={12} />
-                  Compact
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              className="btn-small"
-              title="浏览器协同：ego-browser / 浏览器型 MCP 状态与快捷控制"
-              onClick={() => setShowBrowserPanel(true)}
-            >
-              <Globe size={13} />
-              浏览器
-            </button>
-            <button
-              type="button"
-              className="btn-small"
-              title="展开 / 收起右侧工作区抽屉：变更 / Worktree / 文件 / 终端 (Ctrl+Shift+D)"
-              onClick={() => setShowDiffPanel((v) => !v)}
-            >
-              <PanelRight size={13} />
-              工作区面板
-            </button>
-          </div>
-        </header>
-
-        <div
-          className="timeline-scroll"
-          ref={timelineScrollRef}
-          onScroll={(e) => {
-            const el = e.currentTarget
-            stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-          }}
-        >
-          {actionError && <div className="msg-notice error">{actionError}</div>}
-
-          {!activeThread || activeTimeline.length === 0 ? (
-            <div className="empty-state">
-              <h2>多引擎编码 Agent 工作台</h2>
-              <p>
-                {activeThread
-                  ? `当前会话绑定 ${HARNESS_LABELS[activeThread.harness]}，工作目录：${activeThread.cwd}`
-                  : '在左侧添加项目并选择任意引擎（Pi / OMP / Prime / Claude Code / Codex / ACP / dsh），即可开始流式对话与代码改动审阅。'}
-              </p>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-                {HARNESS_IDS.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className="btn-small"
-                    onClick={() => void handleSwitchComposerHarness(id)}
-                  >
-                    <span className={`dot ${harnesses[id]?.ready ? 'dot-ready' : 'dot-missing'}`} />
-                    使用 {HARNESS_LABELS[id]}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div
-              style={{
-                height: timelineVirtualizer.getTotalSize(),
-                width: '100%',
-                position: 'relative',
-              }}
-            >
-              {timelineVirtualizer.getVirtualItems().map((vItem) => {
-                const item = activeTimeline[vItem.index]
-                if (!item) return null
-                return (
-                  <div
-                    key={vItem.key}
-                    data-index={vItem.index}
-                    ref={timelineVirtualizer.measureElement}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${vItem.start}px)`,
-                    }}
-                  >
-                    {renderTimelineItem(item)}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
-        {showDisconnectBanner && activeThread && disconnectReason && (
-          <div className={`disconnect-banner ${activeThread.status === 'error' ? 'is-error' : ''}`}>
-            <div className="disconnect-banner-top">
-              <div className="disconnect-banner-info">
-                {activeThread.status === 'error' ? (
-                  <AlertTriangle size={16} color="var(--danger)" style={{ marginTop: 2, flexShrink: 0 }} />
-                ) : (
-                  <WifiOff size={16} color="var(--warning)" style={{ marginTop: 2, flexShrink: 0 }} />
-                )}
-                <div style={{ minWidth: 0 }}>
-                  <div className="disconnect-banner-title">
-                    {activeThread.status === 'error'
-                      ? `${HARNESS_LABELS[activeThread.harness]} 启动 / 连接失败`
-                      : `${HARNESS_LABELS[activeThread.harness]} 进程意外退出，连接已断开`}
-                  </div>
-                  <div className="disconnect-banner-reason">{disconnectReason}</div>
-                </div>
-              </div>
-              <div className="disconnect-actions">
-                {activeDisconnectInfo?.stderrTail && (
-                  <button
-                    type="button"
-                    className="btn-small"
-                    onClick={() => setShowStderrDetail((v) => !v)}
-                  >
-                    {showStderrDetail ? '收起日志' : '错误详情'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn-small"
-                  disabled={reconnectingThreadId === activeThread.id}
-                  onClick={() => void handleReconnect(activeThread.id)}
-                >
-                  <RefreshCw size={12} className={reconnectingThreadId === activeThread.id ? 'spin' : undefined} />
-                  {reconnectingThreadId === activeThread.id ? '重连中...' : '重新连接'}
-                </button>
-                {retryPromptCandidate && (
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    disabled={reconnectingThreadId === activeThread.id}
-                    title={`重连并重试：${retryPromptCandidate.slice(0, 80)}`}
-                    onClick={() => void handleRetryLastPrompt(activeThread.id, retryPromptCandidate)}
-                  >
-                    <RotateCcw size={12} />
-                    重试上一条指令
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="暂时忽略"
-                  onClick={() =>
-                    setDismissedDisconnectAt((prev) => ({
-                      ...prev,
-                      [activeThread.id]: disconnectMarker,
-                    }))
-                  }
-                >
-                  <X size={13} />
-                </button>
-              </div>
-            </div>
-            {showStderrDetail && activeDisconnectInfo?.stderrTail && (
-              <pre className="disconnect-stderr">{activeDisconnectInfo.stderrTail}</pre>
-            )}
-          </div>
-        )}
-
-        <div className="composer-wrap">
-          {showAutocomplete && activeTrigger && (
-            <ComposerAutocomplete
-              kind={activeTrigger.kind}
-              query={activeTrigger.query}
-              files={fileSuggestions}
-              commands={filteredSlashCommands}
-              selectedIndex={acSelectedIndex}
-              loading={fileSuggestionsLoading}
-              onHoverIndex={setAcSelectedIndex}
-              onSelectFile={(entry) => applyComposerAutocomplete(`@${entry.path}`)}
-              onSelectCommand={(cmd) => {
-                applyComposerAutocomplete(`/${cmd.name}`)
-              }}
-            />
-          )}
-
-          <div
-            className={`composer-box ${dragOverComposer ? 'drag-over' : ''}`}
-            onDragOver={(e) => {
-              if (Array.from(e.dataTransfer.types).includes('Files')) {
-                e.preventDefault()
-                setDragOverComposer(true)
-              }
-            }}
-            onDragLeave={() => setDragOverComposer(false)}
-            onDrop={(e) => {
-              e.preventDefault()
-              setDragOverComposer(false)
-              if (e.dataTransfer.files?.length) {
-                void addImageFiles(e.dataTransfer.files)
-              }
-            }}
-          >
-            {attachedImages.length > 0 && (
-              <div className="composer-attachments">
-                {attachedImages.map((img) => (
-                  <div key={img.id} className="attachment-chip">
-                    <img
-                      src={`data:${img.mimeType};base64,${img.data}`}
-                      alt={img.name ?? 'image'}
-                      className="attachment-thumb"
-                      title="点击放大预览"
-                      onClick={() => setPreviewImage(img)}
-                    />
-                    <div className="attachment-meta">
-                      <span className="attachment-name" title={img.name}>
-                        {img.name ?? '剪贴板图片'}
-                      </span>
-                      {img.sizeBytes !== undefined && (
-                        <span className="attachment-size">{Math.max(1, Math.round(img.sizeBytes / 1024))} KB</span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      style={{ width: 20, height: 20 }}
-                      title="移除图片"
-                      onClick={() => setAttachedImages((prev) => prev.filter((item) => item.id !== img.id))}
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <input
-              ref={imageInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                if (e.target.files?.length) {
-                  void addImageFiles(e.target.files)
-                  e.target.value = ''
-                }
-              }}
-            />
-
-            <textarea
-              ref={composerRef}
-              className="composer-textarea"
-              placeholder={
-                activeThread
-                  ? `向 ${HARNESS_LABELS[activeThread.harness]} 发送指令（@ 引用文件，/ 斜杠命令，Ctrl+V 粘贴截图，Enter 发送）...`
-                  : '先添加项目或选择一个会话（Ctrl+N 新建，@ 引用文件，/ 斜杠命令）...'
-              }
-              value={promptText}
-              onChange={(e) => {
-                setPromptText(e.target.value)
-                setComposerCursor(e.target.selectionStart ?? e.target.value.length)
-                setAcDismissedKey(null)
-              }}
-              onClick={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
-              onKeyUp={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
-              onSelect={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
-              onPaste={(e) => {
-                const items = e.clipboardData?.items
-                if (!items) return
-                const imgFiles: File[] = []
-                for (const item of Array.from(items)) {
-                  if (item.type.startsWith('image/')) {
-                    const f = item.getAsFile()
-                    if (f) imgFiles.push(f)
-                  }
-                }
-                if (imgFiles.length > 0) {
-                  if (!e.clipboardData.getData('text/plain')) {
-                    e.preventDefault()
-                  }
-                  void addImageFiles(imgFiles)
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing) return
-
-                if (showAutocomplete && activeTrigger) {
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    setAcDismissedKey(triggerKey)
-                    return
-                  }
-                  if (e.key === 'ArrowDown' && activeAcCount > 0) {
-                    e.preventDefault()
-                    setAcSelectedIndex((i) => (i + 1) % activeAcCount)
-                    return
-                  }
-                  if (e.key === 'ArrowUp' && activeAcCount > 0) {
-                    e.preventDefault()
-                    setAcSelectedIndex((i) => (i - 1 + activeAcCount) % activeAcCount)
-                    return
-                  }
-                  if ((e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)) && activeAcCount > 0) {
-                    const safeIdx = Math.min(acSelectedIndex, activeAcCount - 1)
-                    if (activeTrigger.kind === 'file') {
-                      e.preventDefault()
-                      const entry = fileSuggestions[safeIdx]
-                      if (entry) applyComposerAutocomplete(`@${entry.path}`)
-                      return
-                    }
-                    const cmd = filteredSlashCommands[safeIdx]
-                    const exactParameterlessEnter =
-                      e.key === 'Enter' &&
-                      cmd &&
-                      !cmd.argsHint &&
-                      cmd.name.toLowerCase() === activeTrigger.query.toLowerCase()
-                    if (!exactParameterlessEnter) {
-                      e.preventDefault()
-                      if (cmd) applyComposerAutocomplete(`/${cmd.name}`)
-                      return
-                    }
-                  }
-                }
-
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  e.preventDefault()
-                  void handleSend(isStreaming ? 'steer' : undefined)
-                  return
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void handleSend(isStreaming ? 'followUp' : undefined)
-                  return
-                }
-                if (e.key === 'ArrowUp' && !promptText && lastUserPromptInTimeline) {
-                  e.preventDefault()
-                  setPromptText(lastUserPromptInTimeline)
-                  setComposerCursor(lastUserPromptInTimeline.length)
-                }
-              }}
-            />
-
-            <div className="composer-toolbar">
-              <div className="composer-controls">
-                <select
-                  className="select-pill"
-                  title="切换引擎（将新建绑定该引擎的会话，不中断后台运行中的任务）"
-                  value={effectiveHarness}
-                  onChange={(e) => void handleSwitchComposerHarness(e.target.value as HarnessId)}
-                >
-                  {HARNESS_IDS.map((id) => (
-                    <option key={id} value={id}>
-                      {HARNESS_LABELS[id]} {harnesses[id]?.ready ? '' : '(未就绪)'}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  className="select-pill"
-                  style={{ maxWidth: 220 }}
-                  value={currentModelValue}
-                  onChange={(e) => {
-                    if (!activeThread || !e.target.value) return
-                    const [provider, modelId] = e.target.value.split('::')
-                    void window.agentui
-                      .setThreadModel(activeThread.id, provider, modelId)
-                      .then(() => {
-                        setThreads((prev) =>
-                          prev.map((t) =>
-                            t.id === activeThread.id ? { ...t, modelProvider: provider, modelId } : t,
-                          ),
-                        )
-                      })
-                      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-                  }}
-                >
-                  <option value="">默认模型 ({activeCatalog?.models.length ?? 0} 个可用)</option>
-                  {(activeCatalog?.models ?? []).map((m) => (
-                    <option key={`${m.provider}::${m.id}`} value={`${m.provider}::${m.id}`}>
-                      {m.provider}/{m.id}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  className="select-pill"
-                  value={activeThread?.thinkingLevel ?? 'medium'}
-                  onChange={(e) => {
-                    const level = e.target.value as ThinkingLevel
-                    if (!activeThread) return
-                    void window.agentui
-                      .setThreadThinking(activeThread.id, level)
-                      .then(() => {
-                        setThreads((prev) =>
-                          prev.map((t) => (t.id === activeThread.id ? { ...t, thinkingLevel: level } : t)),
-                        )
-                      })
-                      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-                  }}
-                >
-                  {THINKING_LEVELS.map((lvl) => (
-                    <option key={lvl} value={lvl}>
-                      Thinking: {lvl}
-                    </option>
-                  ))}
-                </select>
-
-                <button
-                  type="button"
-                  className="btn-small"
-                  title="上传图片附件（或直接在输入框 Ctrl+V 粘贴截图 / 拖拽图片）"
-                  onClick={() => imageInputRef.current?.click()}
-                >
-                  <ImagePlus size={12} />
-                  图片{attachedImages.length > 0 ? ` (${attachedImages.length})` : ''}
-                </button>
-
-                {activeProject && (
-                  <button
-                    type="button"
-                    className="btn-small"
-                    title="在右侧打开 Worktree 创建面板 (Ctrl+Shift+W)"
-                    onClick={() => {
-                      setDiffPanelTab('worktrees')
-                      setShowDiffPanel(true)
-                    }}
-                  >
-                    <GitBranch size={12} />
-                    Worktree
-                  </button>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', gap: 6 }}>
-                {isStreaming && activeThread && (
-                  <>
-                    <button
-                      type="button"
-                      className="btn-small"
-                      disabled={!promptText.trim() && attachedImages.length === 0}
-                      title="打断并引导当前轮次 (Ctrl+Enter)"
-                      onClick={() => void handleSend('steer')}
-                    >
-                      <Zap size={12} />
-                      Steer
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-small"
-                      style={{ color: 'var(--danger)' }}
-                      title="中止当前生成 (Esc)"
-                      onClick={() =>
-                        void window.agentui
-                          .abortThread(activeThread.id)
-                          .then(() => {
-                            setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, activeThread.id))
-                          })
-                          .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-                      }
-                    >
-                      <Square size={12} />
-                      停止
-                    </button>
-                  </>
-                )}
-                <button
-                  type="button"
-                  className="btn-primary"
-                  disabled={!promptText.trim() && attachedImages.length === 0}
-                  onClick={() => void handleSend(isStreaming ? 'followUp' : undefined)}
-                >
-                  <Send size={13} />
-                  {isStreaming ? '排队' : '发送'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {showDiffPanel && activeThread && (
-        <DiffPanel
-          cwd={activeThread.cwd}
-          repoRoot={gitStatus?.repoRoot}
-          status={gitStatus}
-          activeTab={diffPanelTab}
-          onTabChange={setDiffPanelTab}
-          onRefresh={() => void refreshGit(activeThread.cwd)}
-          onClose={() => setShowDiffPanel(false)}
-          onCreateWorktreeThread={async (branchName, baseRef) => {
-            if (!activeProject) return
-            const wt = await window.agentui.gitCreateWorktree(activeProject.path, branchName, baseRef)
-            await handleNewThread(activeProject.id, effectiveHarness, wt.path, wt.branch ?? branchName)
-          }}
-          onNewThreadInWorktree={async (wtPath, branch) => {
-            if (!activeProject) return
-            await handleNewThread(activeProject.id, effectiveHarness, wtPath, branch ?? undefined)
-          }}
-          onRemoveWorktree={async (wtPath) => {
-            if (!activeProject) return
-            await window.agentui.gitRemoveWorktree(activeProject.path, wtPath, false)
-            await refreshGit(activeThread.cwd)
-          }}
-          onReferenceFile={(relPath) => {
-            setPromptText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@${relPath} `)
-            requestAnimationFrame(() => composerRef.current?.focus())
-          }}
-        />
-      )}
-
-      {activePendingUi && (
-        <ExtensionUiModal
-          key={activePendingUi.id}
-          request={activePendingUi}
-          threadTitle={activePendingThread?.title}
-          harnessLabel={activePendingThread ? HARNESS_LABELS[activePendingThread.harness] : undefined}
-          queueLength={pendingUiQueue.length}
-          onRespond={(resp) => {
-            const targetThreadId = activePendingUi.threadId
-            setPendingUiQueue((prev) => dequeueUiRequest(prev, activePendingUi.id))
-            void window.agentui
-              .respondExtensionUi(targetThreadId, resp)
-              .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-          }}
-        />
-      )}
-
-      {showSettings && (
-        <SettingsModal
+      <div className="workspace-body" hidden={showSettings}>
+        <Sidebar
           harnesses={harnesses}
-          customPaths={customPaths}
-          onSavePath={async (h, p) => {
-            const next = await window.agentui.setCustomBinaryPath(h, p)
-            setHarnesses(next)
-            setCustomPaths((prev) => {
-              const copy = { ...prev }
-              if (p) copy[h] = p
-              else delete copy[h]
-              return copy
-            })
-            if (next[h]?.ready) await loadModelCatalog(h, true)
-          }}
-          onRefresh={async () => {
-            const next = await window.agentui.discoverHarnesses(true)
-            setHarnesses(next)
-          }}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
-
-      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
-
-      {showBrowserPanel && (
-        <BrowserPanel
-          onClose={() => setShowBrowserPanel(false)}
-          screenshotBusy={browserShotBusy}
-          onScreenshot={() => {
-            if (browserShotBusy) return
-            if (attachedImages.length >= MAX_IMAGES_PER_PROMPT) {
-              setActionError(`单条消息最多附加 ${MAX_IMAGES_PER_PROMPT} 张图片`)
-              return
-            }
-            setBrowserShotBusy(true)
+          activeHarness={effectiveHarness}
+          projects={projects}
+          threads={threads}
+          activeProjectId={activeProject?.id ?? null}
+          activeThreadId={activeThreadId}
+          cliSessions={cliSessions}
+          onSelectHarness={(id) => void handleSwitchComposerHarness(id)}
+          onRefreshHarnesses={() => void refreshHarnessSettings().catch(reportError)}
+          onOpenShortcuts={() => setShowShortcuts(true)}
+          onOpenSettings={() => openSettings()}
+          onOpenPalette={() => setShowPalette(true)}
+          onStartDraft={() => startDraft()}
+          onAddProject={() => void handleAddProject()}
+          onRemoveProject={(id) => {
+            const removedIds = new Set(threads.filter((t) => t.projectId === id).map((t) => t.id))
             void window.agentui
-              .browserScreenshot()
-              .then((shot) => {
-                const sizeBytes = Math.floor(shot.data.length * 0.75)
-                if (sizeBytes > MAX_IMAGE_BYTES) {
-                  setActionError('截图超过 10MB 限制，无法附加')
-                  return
-                }
-                setAttachedImages((prev) =>
-                  [
-                    ...prev,
-                    {
-                      id: `browser-shot-${Date.now()}`,
-                      type: 'image' as const,
-                      data: shot.data,
-                      mimeType: shot.mimeType,
-                      name: `browser-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.png`,
-                      sizeBytes,
-                    },
-                  ].slice(0, MAX_IMAGES_PER_PROMPT),
-                )
-                setShowBrowserPanel(false)
-                requestAnimationFrame(() => composerRef.current?.focus())
+              .removeProject(id)
+              .then(() => {
+                setProjects((prev) => prev.filter((p) => p.id !== id))
+                setThreads((prev) => prev.filter((t) => t.projectId !== id))
+                setPendingUiQueue((prev) => prev.filter((item) => !removedIds.has(item.threadId)))
+                if (activeThreadId && removedIds.has(activeThreadId)) setActiveThreadId(null)
+                if (activeProjectId === id) setActiveProjectId(projects.find((project) => project.id !== id)?.id ?? null)
               })
               .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
-              .finally(() => setBrowserShotBusy(false))
           }}
+          onNewThread={(pid, harness) => void handleNewThread(pid, harness)}
+          onOpenTrust={(pid) => setTrustProjectId(pid)}
+          onSelectThread={selectThread}
+          onDeleteThread={(tid) =>
+            void window.agentui
+              .deleteThread(tid)
+              .then(() => {
+                setThreads((prev) => prev.filter((t) => t.id !== tid))
+                setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, tid))
+                if (activeThreadId === tid) setActiveThreadId(null)
+              })
+              .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+          }
+          onRenameThread={(tid, title) =>
+            void window.agentui
+              .updateThreadMeta(tid, { title })
+              .then((updated) => {
+                setThreads((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+              })
+              .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+          }
+          onResumeCliSession={(s) => void handleResumeCliSession(s)}
+          onRefreshCliSessions={() => void window.agentui.listCliSessions().then(setCliSessions)}
         />
+
+        <div
+          className={`work-area${showDiffPanel ? ' panel-open' : ''}${terminalDocked ? ' has-terminal-dock' : ''}${panelResizing ? ' is-resizing' : ''}`}
+          style={{ '--panel-width': `${currentPanelWidth}px` } as CSSProperties}
+        >
+          <main className="main-pane">
+            {showDisconnectBanner && activeThread && disconnectReason && (
+              <section className={`disconnect-banner${activeThread.status === 'error' ? ' is-error' : ''}`} aria-label="连接状态">
+                <div className="disconnect-banner-top">
+                  <button type="button" className="disconnect-banner-info" aria-expanded={showDisconnectDetails}
+                    onClick={() => setShowDisconnectDetails(!showDisconnectDetails)}>
+                    {activeThread.status === 'error' ? <AlertTriangle size={14} /> : <WifiOff size={14} />}
+                    <span>{activeThread.status === 'error' ? '连接失败' : '连接已断开'}</span>
+                    <ChevronRight size={13} className={showDisconnectDetails ? 'project-chevron expanded' : 'project-chevron'} />
+                  </button>
+                  <div className="disconnect-actions">
+                    <button type="button" className="btn-small" disabled={reconnectingThreadId === activeThread.id}
+                      onClick={() => void handleReconnect(activeThread.id)}>
+                      <RefreshCw size={12} className={reconnectingThreadId === activeThread.id ? 'spin' : undefined} />
+                      {reconnectingThreadId === activeThread.id ? '重连中…' : '重新连接'}
+                    </button>
+                    {retryPromptCandidate && <button type="button" className="btn-small"
+                      disabled={reconnectingThreadId === activeThread.id}
+                      onClick={() => void handleRetryLastPrompt(activeThread.id, retryPromptCandidate)}>
+                      <RotateCcw size={12} /> 重试上一条
+                    </button>}
+                    <button type="button" className="icon-btn" title="隐藏连接提示" aria-label="隐藏连接提示"
+                      onClick={() => setDismissedDisconnectAt((prev) => ({ ...prev, [activeThread.id]: disconnectMarker }))}>
+                      <X size={13} />
+                    </button>
+                  </div>
+                </div>
+                {showDisconnectDetails && <div className="disconnect-details">
+                  <p>{disconnectReason}</p>
+                  {activeDisconnectInfo?.stderrTail && <pre className="disconnect-stderr">{activeDisconnectInfo.stderrTail}</pre>}
+                </div>}
+              </section>
+            )}
+            <div className={`conversation-body${showStartup ? ' startup-view' : ''}`}>
+              {actionError && <div className="action-error msg-notice error" role="alert">{actionError}</div>}
+              {showStartup && <div className="startup-heading">
+                <img src={brandIcon} alt="" />
+                <h1>今天要做些什么？</h1>
+                {activeProject && <span className="startup-project"><FolderGit2 size={14} />{activeProject.name}</span>}
+              </div>}
+              {!showStartup && (
+                <div className="timeline-scroll" ref={timelineScrollRef} onScroll={(event) => {
+                  const el = event.currentTarget
+                  stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+                }}>
+                  <div className="timeline-content">
+                    <div style={{ height: timelineVirtualizer.getTotalSize(), position: 'relative' }}>
+                      {timelineVirtualizer.getVirtualItems().map((virtualItem) => {
+                        const item = activeTimeline[virtualItem.index]
+                        if (!item) return null
+                        return (
+                          <div key={virtualItem.key} data-index={virtualItem.index} ref={timelineVirtualizer.measureElement}
+                            className="timeline-row" style={{ transform: `translateY(${virtualItem.start}px)` }}>
+                            {renderTimelineItem(item)}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {activePendingUi && (
+                      <ExtensionUiCard key={activePendingUi.id} request={activePendingUi}
+                        queueLength={pendingForThread.length}
+                        onRespond={async (response) => {
+                          await window.agentui.respondExtensionUi(activePendingUi.threadId, response)
+                          setPendingUiQueue((prev) => dequeueUiRequest(prev, activePendingUi.id))
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="composer-wrap">
+                <div className="trust-quick">
+                  <label className="trust-switch">
+                    <Shield size={13} /><span>权限 / 信任模式</span>
+                    <select aria-label="权限 / 信任模式" value={activeProject ? trustPreset : ''} disabled={!activeProject}
+                      title="工具权限在引擎发起审批时生效"
+                      onChange={(event) => {
+                        if (activeProject) void saveProjectTrust(activeProject.id, event.target.value as TrustPreset).catch(reportError)
+                      }}>
+                      {!activeProject && <option value="">请选择项目</option>}
+                      {TRUST_PRESETS.map((preset) => <option key={preset} value={preset}>{TRUST_PRESET_LABELS[preset]}</option>)}
+                    </select>
+                  </label>
+                </div>
+                {showAutocomplete && activeTrigger && (
+                  <ComposerAutocomplete
+                    kind={activeTrigger.kind}
+                    query={activeTrigger.query}
+                    files={fileSuggestions}
+                    commands={filteredSlashCommands}
+                    selectedIndex={acSelectedIndex}
+                    loading={fileSuggestionsLoading}
+                    onHoverIndex={setAcSelectedIndex}
+                    onSelectFile={(entry) => applyComposerAutocomplete(`@${entry.path}`)}
+                    onSelectCommand={(cmd) => {
+                      applyComposerAutocomplete(`/${cmd.name}`)
+                    }}
+                  />
+                )}
+
+                <div
+                  className={`composer-box ${dragOverComposer ? 'drag-over' : ''}`}
+                  onDragOver={(e) => {
+                    if (Array.from(e.dataTransfer.types).includes('Files')) {
+                      e.preventDefault()
+                      setDragOverComposer(true)
+                    }
+                  }}
+                  onDragLeave={() => setDragOverComposer(false)}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    setDragOverComposer(false)
+                    if (e.dataTransfer.files?.length) {
+                      void addImageFiles(e.dataTransfer.files)
+                    }
+                  }}
+                >
+                  {attachedImages.length > 0 && (
+                    <div className="composer-attachments">
+                      {attachedImages.map((img) => (
+                        <div key={img.id} className="attachment-chip">
+                          <AttachmentPreview image={img} onOpen={() => setPreviewImage(img)} />
+                          <div className="attachment-meta">
+                            <span className="attachment-name" title={img.name}>
+                              {img.name ?? '剪贴板图片'}
+                            </span>
+                            {img.sizeBytes !== undefined && (
+                              <span className="attachment-size">{Math.max(1, Math.round(img.sizeBytes / 1024))} KB</span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            style={{ width: 20, height: 20 }}
+                            title="移除图片"
+                            onClick={() => setAttachedImages((prev) => prev.filter((item) => item.id !== img.id))}
+                          >
+                            <X size={11} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      if (e.target.files?.length) {
+                        void addImageFiles(e.target.files)
+                        e.target.value = ''
+                      }
+                    }}
+                  />
+
+                  <textarea
+                    ref={composerRef}
+                    className="composer-textarea"
+                    aria-label="指令输入框"
+                    placeholder={activeProject ? '描述你想完成的任务…' : '选一个项目，开始编写指令…'}
+                    value={promptText}
+                    onChange={(e) => {
+                      setPromptText(e.target.value)
+                      setComposerCursor(e.target.selectionStart ?? e.target.value.length)
+                      setAcDismissedKey(null)
+                    }}
+                    onClick={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
+                    onKeyUp={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
+                    onSelect={(e) => setComposerCursor(e.currentTarget.selectionStart ?? promptText.length)}
+                    onPaste={(e) => {
+                      const items = e.clipboardData?.items
+                      if (!items) return
+                      const imgFiles: File[] = []
+                      for (const item of Array.from(items)) {
+                        if (item.type.startsWith('image/')) {
+                          const f = item.getAsFile()
+                          if (f) imgFiles.push(f)
+                        }
+                      }
+                      if (imgFiles.length > 0) {
+                        if (!e.clipboardData.getData('text/plain')) {
+                          e.preventDefault()
+                        }
+                        void addImageFiles(imgFiles)
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing) return
+
+                      if (showAutocomplete && activeTrigger) {
+                        if (e.key === 'Escape') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setAcDismissedKey(triggerKey)
+                          return
+                        }
+                        if (e.key === 'ArrowDown' && activeAcCount > 0) {
+                          e.preventDefault()
+                          setAcSelectedIndex((i) => (i + 1) % activeAcCount)
+                          return
+                        }
+                        if (e.key === 'ArrowUp' && activeAcCount > 0) {
+                          e.preventDefault()
+                          setAcSelectedIndex((i) => (i - 1 + activeAcCount) % activeAcCount)
+                          return
+                        }
+                        if ((e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)) && activeAcCount > 0) {
+                          const safeIdx = Math.min(acSelectedIndex, activeAcCount - 1)
+                          if (activeTrigger.kind === 'file') {
+                            e.preventDefault()
+                            const entry = fileSuggestions[safeIdx]
+                            if (entry) applyComposerAutocomplete(`@${entry.path}`)
+                            return
+                          }
+                          const cmd = filteredSlashCommands[safeIdx]
+                          const exactParameterlessEnter =
+                            e.key === 'Enter' &&
+                            cmd &&
+                            !cmd.argsHint &&
+                            cmd.name.toLowerCase() === activeTrigger.query.toLowerCase()
+                          if (!exactParameterlessEnter) {
+                            e.preventDefault()
+                            if (cmd) applyComposerAutocomplete(`/${cmd.name}`)
+                            return
+                          }
+                        }
+                      }
+
+                      if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
+                        e.preventDefault()
+                        const behavior = isStreaming ? runningMessageAction(conversation.enterWhileRunning, e.ctrlKey || e.metaKey) : undefined
+                        void handleSend(behavior)
+                        return
+                      }
+                      if (e.key === 'ArrowUp' && !promptText && lastUserPromptInTimeline) {
+                        e.preventDefault()
+                        setPromptText(lastUserPromptInTimeline)
+                        setComposerCursor(lastUserPromptInTimeline.length)
+                      }
+                    }}
+                  />
+
+                  <div className="composer-toolbar">
+                    <div className="composer-controls">
+                      <button type="button" className="icon-btn composer-attach" title="添加图片 (Ctrl+V)" aria-label="添加图片"
+                        onClick={() => imageInputRef.current?.click()}><ImagePlus size={16} /></button>
+                      <select className="select-pill composer-model" aria-label="模型" title="切换模型" value={currentModelValue}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          if (!activeThread) {
+                            setDraftModel({ harness: effectiveHarness, value })
+                            return
+                          }
+                          if (!value) return
+                          const [provider, modelId] = value.split('::')
+                          void window.agentui.setThreadModel(activeThread.id, provider, modelId).then(() => {
+                            setThreads((prev) => prev.map((thread) => thread.id === activeThread.id
+                              ? { ...thread, modelProvider: provider, modelId } : thread))
+                          }).catch(reportError)
+                        }}>
+                        <option value="" disabled={Boolean(activeThread && currentModelValue)}>默认模型</option>
+                        {currentModelValue && !activeCatalog?.models.some((model) => `${model.provider}::${model.id}` === currentModelValue) && (
+                          <option value={currentModelValue}>{currentModelValue.replace('::', '/')}</option>
+                        )}
+                        {(activeCatalog?.models ?? []).map((model) => (
+                          <option key={`${model.provider}::${model.id}`} value={`${model.provider}::${model.id}`}>{model.id}</option>
+                        ))}
+                      </select>
+                      <select className="select-pill composer-thinking" aria-label="Thinking" title="Thinking 推理强度"
+                      value={activeThread?.thinkingLevel ?? selectedDraftThinking ?? newSessionDefaults?.thinkingLevel ?? 'medium'}
+                        onChange={(event) => {
+                          const level = event.target.value as ThinkingLevel
+                          if (!activeThread) {
+                          setDraftThinking({ harness: effectiveHarness, value: level })
+                            return
+                          }
+                          void window.agentui.setThreadThinking(activeThread.id, level).then(() => {
+                            setThreads((prev) => prev.map((thread) => thread.id === activeThread.id ? { ...thread, thinkingLevel: level } : thread))
+                          }).catch(reportError)
+                        }}>
+                      {THINKING_LEVELS.map((level) => <option key={level} value={level}>Thinking · {THINKING_LABELS[level]}</option>)}
+                      </select>
+                      <button type="button" className="composer-trust" disabled={!activeProject} title="项目信任设置"
+                      aria-label={activeProject ? `信任模式 ${TRUST_PRESET_LABELS[trustPreset]}` : '信任模式'}
+                        onClick={() => { if (activeProject) setTrustProjectId(activeProject.id) }}>
+                      <Shield size={12} />
+                      <span className="composer-trust-full">{activeProject ? TRUST_PRESET_LABELS[trustPreset] : '信任模式'}</span>
+                      {activeProject && <span className="composer-trust-compact" aria-hidden="true">{COMPACT_TRUST_LABELS[trustPreset]}</span>}
+                      </button>
+                      {activeProject && <button type="button" className="icon-btn composer-worktree"
+                        title="工作树 (Ctrl+Shift+W)" aria-label="工作树" onClick={() => openWorkspaceTab('worktrees')}>
+                        <GitBranch size={14} />
+                      </button>}
+                    </div>
+
+                    <div className="send-controls">
+                      {isStreaming && <details ref={sendMenuRef} className="send-menu">
+                        <summary className="icon-btn" aria-label="运行中的发送方式" title="Steer / Follow-up"><ChevronDown size={14} /></summary>
+                        <div className="floating-card send-options">
+                          <button type="button" disabled={!hasDraft} onClick={() => {
+                            if (sendMenuRef.current) sendMenuRef.current.open = false
+                            void handleSend('steer')
+                          }}><Zap size={14} /> 引导（Steer） <kbd>{conversation.enterWhileRunning === 'steer' ? 'Enter' : 'Ctrl Enter'}</kbd></button>
+                          <button type="button" disabled={!hasDraft} onClick={() => {
+                            if (sendMenuRef.current) sendMenuRef.current.open = false
+                            void handleSend('followUp')
+                          }}><ArrowUp size={14} /> 排队（Follow-up） <kbd>{conversation.enterWhileRunning === 'followUp' ? 'Enter' : 'Ctrl Enter'}</kbd></button>
+                        </div>
+                      </details>}
+                      <button type="button" className="send-button" disabled={!isStreaming && !hasDraft}
+                        aria-label={isStreaming ? '停止生成' : '发送'} title={isStreaming ? '停止生成' : '发送 (Enter)'}
+                        onClick={() => isStreaming ? stopCurrentTurn() : void handleSend()}>
+                        {isStreaming ? <Square size={13} fill="currentColor" /> : <ArrowUp size={20} strokeWidth={2.4} />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {showStartup && <section className="recent-projects" aria-label="最近项目">
+                <div className="recent-heading">
+                  {recentProjects.length > 0 && <h2>最近项目</h2>}
+                  {recentProjects.length === 0 && <button type="button" className="btn-small" onClick={() => void handleAddProject()}><FolderPlus size={14} /> 添加项目</button>}
+                </div>
+                {recentProjects.length > 0 && <div className="recent-project-list">
+                  {recentProjects.map((project) => (
+                    <button type="button" key={project.id} className="recent-project" title={project.path}
+                      aria-pressed={activeProject?.id === project.id} onClick={() => startDraft(project.id)}>
+                      <FolderGit2 size={15} /><span>{project.name}</span><ChevronRight size={13} />
+                    </button>
+                  ))}
+                </div>}
+              </section>}
+            </div>
+          </main>
+
+          <div className="workspace-side" id="workspace-panel" inert={!showDiffPanel} aria-hidden={!showDiffPanel}>
+            <DiffPanel
+              cwd={effectiveCwd ?? ''}
+              repoRoot={gitStatus?.repoRoot}
+              status={gitStatus}
+              activeTab={diffPanelTab}
+              selectedTurn={selectedTurn?.threadId === activeThreadId ? selectedTurn : null}
+              onShowWorkingDiff={() => setSelectedTurn(null)}
+              terminalDocked={terminalDocked}
+              browser={browserVisited ? <BrowserPanel screenshotBusy={browserShotBusy} onScreenshot={attachBrowserScreenshot} /> : null}
+              onDockTerminal={dockTerminal}
+              onTabChange={openWorkspaceTab}
+              onRefresh={() => void refreshGit(effectiveCwd ?? undefined)}
+              onClose={() => setShowDiffPanel(false)}
+              onCreateWorktreeThread={async (branchName, baseRef) => {
+                if (!activeProject) return
+                const wt = await window.agentui.gitCreateWorktree(activeProject.path, branchName, baseRef)
+                await handleNewThread(activeProject.id, effectiveHarness, wt.path, wt.branch ?? branchName)
+              }}
+              onNewThreadInWorktree={async (wtPath, branch) => {
+                if (!activeProject) return
+                await handleNewThread(activeProject.id, effectiveHarness, wtPath, branch ?? undefined)
+              }}
+              onRemoveWorktree={async (wtPath) => {
+                if (!activeProject) return
+                await window.agentui.gitRemoveWorktree(activeProject.path, wtPath, false)
+                await refreshGit(effectiveCwd ?? undefined)
+              }}
+              onReferenceFile={(relPath) => {
+                const next = `${promptText}${promptText && !promptText.endsWith(' ') ? ' ' : ''}@${relPath} `
+                setPromptText(next)
+                setComposerCursor(next.length)
+                requestAnimationFrame(() => {
+                  composerRef.current?.focus()
+                  composerRef.current?.setSelectionRange(next.length, next.length)
+                })
+              }}
+            />
+          </div>
+          {showDiffPanel && <div className="panel-resize" role="separator" aria-label="调整工作区面板宽度"
+            aria-orientation="vertical" aria-controls="workspace-panel"
+            aria-valuemin={MIN_PANEL_WIDTH} aria-valuemax={panelWidthLimitPx} aria-valuenow={currentPanelWidth} tabIndex={0}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return
+              panelDragRef.current = { x: event.clientX, width: currentPanelWidth }
+              event.currentTarget.setPointerCapture(event.pointerId)
+              setPanelResizing(true)
+            }}
+            onPointerMove={(event) => {
+              const drag = panelDragRef.current
+              if (drag && event.currentTarget.hasPointerCapture(event.pointerId)) adjustPanelWidth(drag.width + drag.x - event.clientX)
+            }}
+            onLostPointerCapture={() => {
+              panelDragRef.current = null
+              setPanelResizing(false)
+            }}
+            onDoubleClick={() => adjustPanelWidth(DEFAULT_PANEL_WIDTH)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault()
+                adjustPanelWidth(currentPanelWidth + (event.key === 'ArrowLeft' ? 16 : -16))
+              }
+            }} />}
+          <section className={`terminal-surface ${terminalDocked ? 'terminal-docked' : 'terminal-at-right'}`}
+            aria-label="内嵌终端" hidden={!terminalDocked && !showTerminalAtRight}>
+            {terminalDocked && <header className="terminal-dock-header">
+              <span><Terminal size={14} /> 终端</span>
+              <div>
+                <button type="button" className="icon-btn" title="移回右侧面板" aria-label="移回右侧面板"
+                  onClick={() => openWorkspaceTab('terminal', 'right')}><PanelRightOpen size={15} /></button>
+                <button type="button" className="icon-btn" title="关闭底部终端" aria-label="关闭底部终端"
+                  onClick={() => setTerminalDocked(false)}><X size={14} /></button>
+              </div>
+            </header>}
+            <div hidden={!effectiveCwd} className="terminal-session"><TerminalPanel cwd={effectiveCwd ?? ''} /></div>
+            {!effectiveCwd && <p className="panel-placeholder">请选择一个项目。</p>}
+          </section>
+        </div>
+      </div>
+
+      {showPalette && <CommandPalette entries={paletteEntries} onClose={() => setShowPalette(false)} />}
+
+      {showSettings && (
+        <SettingsPage destination={settingsDestination} appearance={appearance} activeHarness={effectiveHarness}
+          conversation={conversation} projects={projects} activeProjectId={activeProject?.id ?? null} defaultProjectTrust={defaultProjectTrust}
+          harnesses={harnesses} customPaths={customPaths} defaults={harnessDefaults} catalogs={catalogs} catalogLoading={catalogLoading}
+          onNavigate={setSettingsDestination} onSavePath={saveEnginePath} onRefreshHarnesses={refreshHarnessSettings}
+          onRefreshCatalog={(id) => loadModelCatalog(id, true)} onSaveDefaults={saveHarnessDefaults} onSaveAppearance={saveAppearance}
+          onSaveConversation={saveConversation} onSaveProjectTrust={saveProjectTrust} onSaveDefaultProjectTrust={saveDefaultProjectTrust} />
       )}
+
+      {showShortcuts && <ShortcutsModal enterWhileRunning={conversation.enterWhileRunning} onClose={() => setShowShortcuts(false)} />}
 
       {trustProjectId && (() => {
         const trustProject = projects.find((p) => p.id === trustProjectId)
@@ -1593,13 +1700,7 @@ export function App() {
             project={trustProject}
             onClose={() => setTrustProjectId(null)}
             onSave={(preset) => {
-              void window.agentui
-                .setProjectTrust(trustProject.id, preset)
-                .then((updated) => {
-                  setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
-                  setTrustProjectId(null)
-                })
-                .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
+              void saveProjectTrust(trustProject.id, preset).then(() => setTrustProjectId(null)).catch(reportError)
             }}
           />
         )
@@ -1615,10 +1716,7 @@ export function App() {
           initialTab={forkModalTab}
           highlightText={forkHighlightText}
           onFork={handleForkThread}
-          onSelectThread={(tid) => {
-            setActiveThreadId(tid)
-            void window.agentui.setActiveThread(tid)
-          }}
+          onSelectThread={selectThread}
           onLoadTimeline={(tid) => {
             void window.agentui.getThreadTimeline(tid).then((items) => {
               setTimelines((prev) => ((prev[tid]?.length ?? 0) > 0 ? prev : { ...prev, [tid]: items }))
