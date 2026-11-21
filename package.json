@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Multi-harness coding agent desktop workspace for Pi, OMP, Prime Agent, Claude Code, Codex, ACP and dsh",
+  "author": "AgentUI",
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
@@ -11,10 +12,17 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "version:set": "node scripts/bump-version.mjs",
+    "dist:dir": "npm run build && electron-builder --dir",
+    "dist:win": "npm run build && electron-builder --win nsis portable",
+    "dist": "npm run dist:win"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.26",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "highlight.js": "^11.12.0",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
@@ -23,11 +31,13 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.4.1",
     "electron": "^35.2.0",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^3.1.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",

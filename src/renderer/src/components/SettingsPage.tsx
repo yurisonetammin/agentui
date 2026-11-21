@@ -16,6 +16,7 @@ import {
   Server,
   Shield,
   Sparkles,
+  SquareTerminal,
 } from 'lucide-react'
 import { CAPABILITY_LABELS, CAPABILITY_NOTES, HARNESS_CAPABILITIES, type CapabilitySupport } from '@shared/capabilities'
 import {
@@ -32,7 +33,7 @@ import type { TrustPreset } from '@shared/tool-policy'
 import { HARNESS_IDS, HARNESS_LABELS, THINKING_LEVELS, type HarnessId, type HarnessStatus, type ModelCatalogResult, type ProjectEntry, type ThinkingLevel } from '@shared/types'
 import { errorText, Segments, SettingsRow } from './SettingsControls'
 import { ConversationPage, DiagnosticsPage, ProjectPermissionsPage } from './SettingsWorkflowPages'
-import { BrowserSettingsPage, McpSettingsPage, PluginsSettingsPage, SkillsSettingsPage, UsageSettingsPage } from './SettingsExtensionsPages'
+import { BrowserSettingsPage, HerdrSettingsPage, McpSettingsPage, PluginsSettingsPage, SkillsSettingsPage, UsageSettingsPage } from './SettingsExtensionsPages'
 
 const SETTINGS_SECTIONS = {
   engines: { label: '引擎与模型', icon: Cpu },
@@ -41,6 +42,7 @@ const SETTINGS_SECTIONS = {
   skills: { label: '技能', icon: Sparkles },
   usage: { label: '使用情况', icon: Gauge },
   browser: { label: '浏览器', icon: AppWindow },
+  herdr: { label: 'Herdr', icon: SquareTerminal },
   appearance: { label: '外观与布局', icon: Monitor },
   conversation: { label: '会话与快捷键', icon: Keyboard },
   projects: { label: '项目与权限', icon: Shield },
@@ -77,6 +79,9 @@ export const SETTINGS_LINKS: Array<SettingsDestination & { label: string; keywor
   })),
   { section: 'usage', label: '使用情况', keywords: '用量 token 费用 额度 统计 报表 上下文' },
   { section: 'browser', label: '浏览器', keywords: '浏览器 独立窗口 标签页 分享 登录隔离 ego' },
+  { section: 'herdr', label: 'Herdr 终端', keywords: 'herdr 持久终端 终端 观察接管 分屏 工作区' },
+  { section: 'herdr', anchor: 'herdr-path', label: 'Herdr 路径', keywords: 'herdr 可执行文件 CLI' },
+  { section: 'herdr', anchor: 'herdr-session', label: 'Herdr 会话', keywords: 'herdr 默认 独立 agentui' },
   ...HARNESS_IDS.map((harness) => ({
     section: 'engines' as const, harness, anchor: 'engine-path',
     label: `${HARNESS_LABELS[harness]} 路径`, keywords: 'CLI 探测 可执行文件',
@@ -458,6 +463,7 @@ export function SettingsPage(props: Props) {
             sessionEngine={props.sessionEngine} sessionCommands={props.sessionCommands} onInsertToComposer={props.onInsertToComposer} />}
           {destination.section === 'usage' && <UsageSettingsPage projects={props.projects} />}
           {destination.section === 'browser' && <BrowserSettingsPage onOpenBrowserWindow={props.onOpenBrowserWindow} />}
+          {destination.section === 'herdr' && <HerdrSettingsPage projects={props.projects} />}
           {destination.section === 'engines' && <>
             <div className="settings-page-heading settings-engine-heading">
               <div><h1>引擎与模型</h1><p>查看本机 CLI，配置启动路径和新会话默认值。</p></div>

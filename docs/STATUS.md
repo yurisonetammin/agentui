@@ -4,7 +4,7 @@
 
 ## 1. 当前进度总览
 
-- **当前阶段**：**Phase 1 MVP + 第 1 步（图标/快捷键/断线重连）+ 第 2 步（`@file` / `/slash` / 图片粘贴 / 会话分叉对比）+ Phase 2（多协议桥接扩展 + 工作区文件树/终端 + 虚拟滚动）+ Phase 3 第 1/2 项（项目信任与工具权限策略 + ego-browser / 浏览器型 MCP 协同）+ P1 评审修复（见 2.7 节）+ 设置页五入口与独立浏览器窗口（MCP / 插件 / 技能 / 使用情况 / 浏览器，见 2.8 节）已全部完成并通过实窗验证**（具体观察指标见第 5 节）。
+- **当前阶段**：**Phase 1 MVP + 第 1 步（图标/快捷键/断线重连）+ 第 2 步（`@file` / `/slash` / 图片粘贴 / 会话分叉对比）+ Phase 2（多协议桥接扩展 + 工作区文件树/终端 + 虚拟滚动）+ Phase 3 第 1/2 项（项目信任与工具权限策略 + ego-browser / 浏览器型 MCP 协同）+ P1 评审修复（见 2.7 节）+ 设置页五入口与独立浏览器窗口（MCP / 插件 / 技能 / 使用情况 / 浏览器，见 2.8 节）+ Herdr 持久终端接入（连接/映射/只读预览/内嵌 xterm 交互终端，见 2.10 节）已完成，自动化验证全绿（真实 CLI 流实测见 2.10）**。
 - **架构路线确认**：
   - 从空项目目录开始构建自主可控的编码工作台；
   - 经环境检查本机无 Rust (`rustc`/`cargo`) 与 MSVC Build Tools (`cl.exe`/`link.exe`) 后，确认采用 **Electron 35 + TypeScript + React 19 + `electron-vite`**（零原生 C++ 插件）。
@@ -90,6 +90,36 @@
 | **「会话已加载」跨引擎误标** | 技能页新增 `sessionEngine`（活动会话所属引擎），只有引擎一致时才按命令名标「会话已加载」。 |
 | **插件安装前缺少摘要** | 「安装」改为两步确认：先展示来源 / 作用范围 / 引擎摘要与「版本、包含资源在安装后于列表详情查看」的说明，确认后才执行。 |
 
+## 2.10 Herdr 持久终端接入 (2026-11-21)
+
+| 变更 | 说明 |
+| :--- | :--- |
+| 新增 `src/shared/herdr.ts` | Herdr 共享类型 + 纯函数：JSON 信封/快照解析（本机 herdr 0.9.5 实测夹具）、项目↔工作区 cwd 匹配（手动关联优先）、设置规范化 |
+| 新增 `electron/main/herdr-service.ts` | CLI 检测（PATH + 候选目录 + 自定义路径，60s 缓存）、子命令封装（`prepareExecutableSpawn` + `shell:false`，`HERDR_SESSION=agentui` 会话隔离）、`api snapshot` 单次拉全、工作区创建/关闭、pane read/focus、Pi/OMP 经 `agent start`、Prime 经 `pane run`；`terminal session observe|control` 流子进程管理（`StrictJsonlDecoder` 解 NDJSON，`terminal.input` 用 `text` 字段、`terminal.resize` 用 `cols/rows`，release 后 CLI 自动退出） |
+| IPC 契约 | `herdr:*` 12 条 handle + `agentui:herdrFrame` / `agentui:herdrStreamClosed` 推送；`PersistedState.herdr`（customPath / session / associations），`store.ts` 与 `normalizeHerdrSettings` 接入 |
+| 渲染端 | 终端面板新增「命令运行 / Herdr 终端」视图切换（localStorage 持久）；`HerdrPanel`（服务状态条、当前项目匹配树、其他工作区折叠、只读快照、在 Herdr 中打开、新建 Pi/OMP/Prime 会话、手动关联）；`HerdrTerminalView`（xterm.js + FitAddon：整屏 ANSI 帧直接写入、观察默认、接管输入（冲突时确认抢占）、resize 同步、卸载/退出释放流）；设置页新增「Herdr」区块（检测/服务状态、路径测试与保存、默认 vs 独立 agentui 会话、项目关联管理） |
+| 依赖 | 新增纯 JS `@xterm/xterm` + `@xterm/addon-fit`（渲染端 only，零原生铁律不变） |
+| 退出语义 | `before-quit` 增加 `herdr.stopStreams()`；Herdr 服务与 pane 不受 AgentUI 退出影响（新增铁律 14） |
+| 测试 | `tests/herdr.test.ts`：解析器/匹配/设置 22 用例 + 流管理注入假子进程用例 + `AGENTUI_LIVE_HERDR=1` 门控真实 CLI 用例（检测/快照/observe 帧/释放清理） |
+
+### 2.10.1 Herdr 验收修复 (2026-11-21)
+
+| 问题 | 修复 |
+| :--- | :--- |
+| 实时终端丢首屏（首帧在 attach 返回前到达被丢弃） | `HerdrTerminalView` 订阅层在流 ID 未定时按 paneId 暂存早到帧，attach 返回后按 streamId 过滤回放 |
+| 切走视图后终端流仍在运行/连接中卸载竞态泄漏流 | 实时终端仅在面板可见时挂载（隐藏即卸载并释放）；attach 期间卸载时由 disposed 标记在返回后立即释放新流 |
+| 「在 Herdr 中打开」报用法错误 | `pane focus` 仅支持方向移动——改为 `tab focus <tab_id>`（实测定位后 pane focused=true），契约更名 `herdrFocusTab` |
+| 「测试路径」对不存在的路径误报成功（回退 PATH） | `testPath` 改为严格探测显式路径：文件不存在直接判不可用；`getStatus` 的自动发现逻辑不变 |
+| 新建 Pi/OMP/Prime 会话忽略手动关联 | `launchAgent` 接收 projectId，手动关联工作区优先于目录自动匹配 |
+| 独立会话可能连到继承端点 | `cliEnvironment` 显式剔除继承的 `HERDR_SOCKET_PATH` / `HERDR_SESSION` 后再按设置注入 |
+| 测试 | `tests/herdr.test.ts` 增至 29 用例（testPath 严格探测、launchAgent 关联采用/新建两条路径）；`AGENTUI_LIVE_HERDR=1` 真实 CLI 全绿；全量 214 用例通过 |
+
+### 2.10.2 Herdr 会话切换与连接复验
+
+- 切换 Herdr 会话或可执行文件后，原连接的面板选择和预览清空。原终端流立即停止对界面转发帧并拒绝输入，随后释放；同名面板在新连接里需重新选择。
+- Prime 启动按 `herdr pane run` 的执行结果判断，接受成功退出且输出为空的情况。Herdr 返回的命令错误仍显示在启动反馈里。
+- 实时终端在完成首轮布局后发起连接，每次挂载独立管理首帧、连接状态和清理。开发模式的 StrictMode 试挂载取消对应的连接请求。
+
 ## 3. 已完成文件清单
 
 - **配置、资源与文档**：`package.json`、`tsconfig.json`、`tsconfig.node.json`、`tsconfig.web.json`、`electron.vite.config.ts`、`vitest.config.ts`、`assets/{icon.ico,icon.png}`、`AGENTS.md`、`README.md`、`docs/PLAN.md`、`docs/STATUS.md`
@@ -172,3 +202,13 @@
 - 用量按每个分组判断价格数据是否存在。无费用数据的行显示「未提供」，已知费用为零时照常显示，混合总计标出覆盖的调用数。已用混合数据验证报表界面。
 - Prime 0.10.3 Rust 只提供用户级插件操作。实窗验证了项目级请求被拒绝、临时配置中用户级本地包安装成功，以及 Pi 仍可选择项目级。Prime MCP 的添加和删除也已用临时配置复测。
 - 类型检查和生产构建通过。188 项测试通过，2 项门控测试跳过。
+
+### 5.9 会话全文检索、Playwright 端到端回归与 Windows 打包分发 (2026-11-21)
+
+- **会话全文检索（零原生增量 JSONL 索引）**：新增 [src/shared/session-search.ts](../src/shared/session-search.ts)（Pi/OMP/Prime + Claude `.jsonl` 文本提取、分词排序、命中片段居中裁剪）与 [electron/main/sessions/search-index.ts](../electron/main/sessions/search-index.ts)（按 `mtimeMs + size` 增量缓存并原子持久化至与 `state.json` 同目录的 `session-index.json`，支持内存/实时会话及 8MB 单文件读取上限）；经 `sessions:search` IPC 接入 `Ctrl+K` [CommandPalette.tsx](../src/renderer/src/components/CommandPalette.tsx)（150ms 防抖、序号防竞态、`<mark>` 高亮片段、一键切换或导入历史会话）。新增 `tests/session-search.test.ts`（4 例）。
+- **Playwright Electron 端到端回归套件**：新增 [playwright.config.ts](../playwright.config.ts) 与 [tests/e2e/app.spec.ts](../tests/e2e/app.spec.ts)（`npm run test:e2e`），使用隔离临时目录与 `AGENTUI_STATE_PATH` 验证 7 项核心回归：启动/preload API 挂载/生产 CSP 与沙箱隔离、项目信任预设持久化与非法值拒绝、工作区文件树与越界防护、零原生终端执行与退出码、命令面板会话全文检索与打开、设置页 7 区块切换、独立浏览器窗口与无效分享目标校验；支持 `AGENTUI_E2E_EXECUTABLE` 环境变量直测打包后的 `AgentUI.exe`。
+- **Windows 打包与版本注入**：新增 [electron-builder.yml](../electron-builder.yml)（`asar: true`、`npmRebuild: false`、`extraResources` 解包图标资源供 `resolveAppIcon()` 读取）、[scripts/bump-version.mjs](../scripts/bump-version.mjs)（`npm run version:set -- <semver|patch|minor|major|--print>`）与 `package.json` 的 `dist:dir` / `dist:win` / `dist` 脚本。实测 `electron-builder --win nsis portable` 成功产出：
+  - `release/AgentUI-Setup-0.1.0-x64.exe`（NSIS 安装包，91.53 MB）
+  - `release/AgentUI-Portable-0.1.0-x64.exe`（绿色便携包，83.21 MB）
+  - `release/win-unpacked/AgentUI.exe`（已通过 `AGENTUI_E2E_EXECUTABLE` 跑通全部 7/7 Playwright E2E 用例，耗时 4.2s，0 console/page errors）。
+- **全量验证**：`npm run typecheck` 通过，`npm test` 24 个测试文件 221 通过 / 5 门控跳过，`npm run test:e2e`（开发目录 3.0s、打包 `AgentUI.exe` 4.2s）均 7/7 通过。

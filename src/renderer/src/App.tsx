@@ -68,6 +68,7 @@ import { SettingsPage, SETTINGS_LINKS, settingsSectionLabel, type SettingsDestin
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { Sidebar } from './components/Sidebar'
 import { TerminalPanel } from './components/TerminalPanel'
+import { HerdrPanel } from './components/HerdrPanel'
 import { WorkbenchHeader } from './components/WorkbenchHeader'
 
 const MAX_IMAGES_PER_PROMPT = 4
@@ -101,9 +102,10 @@ function readPanelPreferences() {
         ? Math.max(MIN_PANEL_WIDTH, Math.min(680, prefs.width)) : DEFAULT_PANEL_WIDTH,
       open: prefs.open === true,
       terminalDocked: prefs.terminalDocked === true,
+      terminalView: prefs.terminalView === 'herdr' ? 'herdr' : 'local',
     } as const
   } catch {
-    return { tab: 'changes', width: DEFAULT_PANEL_WIDTH, open: false, terminalDocked: false } as const
+    return { tab: 'changes', width: DEFAULT_PANEL_WIDTH, open: false, terminalDocked: false, terminalView: 'local' } as const
   }
 }
 
@@ -176,6 +178,7 @@ export function App() {
   const [panelWidthLimitPx, setPanelWidthLimitPx] = useState(() => panelWidthLimit(window.innerWidth))
   const [panelResizing, setPanelResizing] = useState(false)
   const [terminalDocked, setTerminalDocked] = useState(initialPanel.terminalDocked)
+  const [terminalView, setTerminalView] = useState<'local' | 'herdr'>(initialPanel.terminalView)
   const [browserVisited, setBrowserVisited] = useState(initialPanel.open && initialPanel.tab === 'browser')
   const [showPalette, setShowPalette] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -316,9 +319,9 @@ export function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(PANEL_PREFS_KEY, JSON.stringify({ tab: diffPanelTab, width: panelWidth, open: showDiffPanel, terminalDocked }))
+      localStorage.setItem(PANEL_PREFS_KEY, JSON.stringify({ tab: diffPanelTab, width: panelWidth, open: showDiffPanel, terminalDocked, terminalView }))
     } catch { /* Window preferences are optional. */ }
-  }, [diffPanelTab, panelWidth, showDiffPanel, terminalDocked])
+  }, [diffPanelTab, panelWidth, showDiffPanel, terminalDocked, terminalView])
 
   useEffect(() => {
     function resize() { setPanelWidthLimitPx(panelWidthLimit(window.innerWidth)) }
@@ -1764,13 +1767,46 @@ export function App() {
                   onClick={() => setTerminalDocked(false)}><X size={14} /></button>
               </div>
             </header>}
-            <div hidden={!effectiveCwd} className="terminal-session"><TerminalPanel cwd={effectiveCwd ?? ''} /></div>
+            <div className="terminal-mode-bar" role="tablist" aria-label="终端视图切换">
+              <button type="button" role="tab" aria-selected={terminalView === 'local'}
+                className={`terminal-mode-tab ${terminalView === 'local' ? 'is-active' : ''}`}
+                onClick={() => setTerminalView('local')}>命令运行</button>
+              <button type="button" role="tab" aria-selected={terminalView === 'herdr'}
+                className={`terminal-mode-tab ${terminalView === 'herdr' ? 'is-active' : ''}`}
+                onClick={() => setTerminalView('herdr')}>Herdr 终端</button>
+            </div>
+            <div hidden={!effectiveCwd || terminalView !== 'local'} className="terminal-session"><TerminalPanel cwd={effectiveCwd ?? ''} /></div>
+            <div hidden={!effectiveCwd || terminalView !== 'herdr'} className="terminal-session">
+              <HerdrPanel cwd={effectiveCwd} projectId={activeProject?.id ?? null} projectName={activeProject?.name ?? null}
+                visible={(terminalDocked || showTerminalAtRight) && terminalView === 'herdr'} />
+            </div>
             {!effectiveCwd && <p className="panel-placeholder">请选择一个项目。</p>}
           </section>
         </div>
       </div>
 
-      {showPalette && <CommandPalette entries={paletteEntries} onClose={() => setShowPalette(false)} />}
+      {showPalette && (
+        <CommandPalette
+          entries={paletteEntries}
+          onClose={() => setShowPalette(false)}
+          onSearchSessions={(q) => window.agentui.searchSessions(q, { limit: 20 })}
+          onOpenSearchResult={(hit) => {
+            if (showSettings) closeSettings()
+            if (hit.threadId && threads.some((t) => t.id === hit.threadId)) {
+              selectThread(hit.threadId)
+              return
+            }
+            void handleResumeCliSession({
+              harness: hit.harness,
+              sessionPath: hit.sessionPath,
+              sessionId: hit.sessionId,
+              cwd: hit.cwd,
+              title: hit.title,
+              updatedAt: hit.updatedAt,
+            })
+          }}
+        />
+      )}
 
       {showSettings && (
         <SettingsPage destination={settingsDestination} appearance={appearance} activeHarness={effectiveHarness}

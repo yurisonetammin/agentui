@@ -432,6 +432,7 @@ export interface PersistedState {
   conversation: ConversationSettings
   defaultProjectTrust: import('./tool-policy').TrustPreset
   harnessDefaults: Partial<Record<HarnessId, HarnessDefaults>>
+  herdr: import('./herdr').HerdrSettings
   activeHarness: HarnessId
   activeProjectId: string | null
   activeThreadId: string | null
@@ -518,6 +519,26 @@ export interface AgentUiApi {
   terminalStop(runId: string): Promise<void>
   onTerminalOutput(cb: (event: TerminalOutputEvent) => void): () => void
   onTerminalExit(cb: (event: TerminalExitEvent) => void): () => void
+
+  // ── Herdr 持久终端 ──
+  herdrStatus(refresh?: boolean): Promise<import('./herdr').HerdrStatusReport>
+  herdrTestPath(path: string): Promise<import('./herdr').HerdrStatus>
+  herdrStartServer(): Promise<import('./herdr').HerdrServerStatus>
+  herdrSnapshot(connectionId?: number): Promise<import('./herdr').HerdrSnapshotView>
+  herdrReadPane(paneId: string, source?: 'visible' | 'recent' | 'recent-unwrapped'): Promise<string>
+  herdrCreateWorkspace(cwd: string, label: string): Promise<{ workspaceId: string; tabId: string; paneId: string }>
+  herdrSetAssociation(projectId: string, association: import('./herdr').HerdrAssociation | null): Promise<import('./herdr').HerdrSettings>
+  herdrUpdateSettings(patch: Partial<Pick<import('./herdr').HerdrSettings, 'customPath' | 'session'>>): Promise<import('./herdr').HerdrSettings>
+  herdrFocusTab(tabId: string): Promise<void>
+  herdrLaunchAgent(kind: import('./herdr').HerdrLaunchKind, cwd: string, workspaceLabel: string, projectId?: string | null): Promise<import('./herdr').HerdrLaunchResult>
+  herdrAttachStream(paneId: string, options: import('./herdr').HerdrAttachOptions): Promise<{ streamId: string; mode: import('./herdr').HerdrStreamMode }>
+  herdrStreamInput(streamId: string, text: string): Promise<void>
+  herdrStreamResize(streamId: string, cols: number, rows: number): Promise<void>
+  herdrReleaseStream(streamId: string): Promise<void>
+  onHerdrFrame(cb: (event: import('./herdr').HerdrFrameEvent) => void): () => void
+  onHerdrStreamClosed(cb: (event: import('./herdr').HerdrStreamClosedEvent) => void): () => void
+  onHerdrConnectionChanged(cb: (connectionId: number) => void): () => void
+
   browserStatus(refresh?: boolean): Promise<BrowserStatus>
   browserSpaces(): Promise<BrowserSpaceInfo[]>
   browserTabs(): Promise<BrowserTabInfo[]>
@@ -528,6 +549,7 @@ export interface AgentUiApi {
   getThreadForkTree(threadId: string): Promise<SessionTreeSnapshot>
   forkThread(input: ForkThreadInput): Promise<ForkThreadResult>
   listCliSessions(harness?: HarnessId): Promise<CliSessionSummary[]>
+  searchSessions(query: string, options?: import('./session-search').SessionSearchOptions): Promise<import('./session-search').SessionSearchResponse>
   gitGetStatus(cwd: string): Promise<GitStatusSummary>
   gitGetDiff(cwd: string, filePath?: string, staged?: boolean): Promise<string>
   gitStageFile(cwd: string, filePath: string): Promise<void>

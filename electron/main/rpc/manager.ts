@@ -77,6 +77,10 @@ export class RuntimeManager {
     return structuredClone(this.startupIssues)
   }
 
+  getCachedTimeline(threadId: string): TimelineItem[] | undefined {
+    return this.timelines.get(threadId)
+  }
+
   getTimeline(threadId: string): TimelineItem[] {
     const cached = this.timelines.get(threadId)
     if (cached) return cached

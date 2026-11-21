@@ -18,6 +18,7 @@ import {
 } from '@shared/types'
 import { isTrustPreset } from '@shared/tool-policy'
 import { isExtensionEngine, type ExtensionEngine, type McpAddInput, type UsageFilters } from '@shared/extensions'
+import { HERDR_AGENT_KINDS, type HerdrAssociation, type HerdrAttachOptions, type HerdrLaunchKind, type HerdrSessionMode } from '@shared/herdr'
 import type { HarnessDiscoveryService } from './discovery'
 import type { BrowserCompanionService } from './browser-companion'
 import type { BrowserWindowService } from './browser-window-service'
@@ -25,9 +26,11 @@ import type { EngineMcpService } from './extensions/mcp-service'
 import type { EnginePackageService } from './extensions/package-service'
 import type { EngineSkillService } from './extensions/skill-service'
 import type { GitService } from './git/git-service'
+import type { HerdrService } from './herdr-service'
 import type { ModelCatalogService } from './model-catalog'
 import type { RuntimeManager } from './rpc/manager'
 import { scanCliSessions } from './sessions/catalog'
+import type { SessionSearchService } from './sessions/search-index'
 import type { StateStore } from './store'
 import type { TerminalService } from './terminal-service'
 import type { UsageService } from './usage-service'
@@ -49,11 +52,14 @@ export function registerIpcHandlers(deps: {
   engineSkills: EngineSkillService
   usage: UsageService
   terminal: TerminalService
+  herdr: HerdrService
   runtimeManager: RuntimeManager
+  sessionSearch: SessionSearchService
 }): void {
   const {
     getWindow, store, discovery, models, git, workspaceFiles, workspaceBrowser,
-    browserCompanion, browserWindow, engineMcp, enginePackages, engineSkills, usage, terminal, runtimeManager,
+    browserCompanion, browserWindow, engineMcp, enginePackages, engineSkills, usage, terminal, herdr, runtimeManager,
+    sessionSearch,
   } = deps
   const pendingPathUpdates = new Map<HarnessId, symbol>()
 
@@ -379,6 +385,78 @@ export function registerIpcHandlers(deps: {
     return terminal.stop(runId)
   })
 
+  // ── Herdr 持久终端 ───────────────────────────────────────────────────
+  ipcMain.handle('herdr:status', (_e, refresh?: boolean) => herdr.getStatusReport(refresh === true))
+  ipcMain.handle('herdr:testPath', (_e, path: string) => herdr.testPath(String(path ?? '')))
+  ipcMain.handle('herdr:startServer', () => herdr.startServer())
+  ipcMain.handle('herdr:snapshot', (_e, connectionId?: number) => herdr.getSnapshot(connectionId))
+  ipcMain.handle('herdr:readPane', (_e, paneId: string, source?: 'visible' | 'recent' | 'recent-unwrapped') => {
+    if (typeof paneId !== 'string' || !paneId.trim()) throw new Error('缺少 Herdr 面板 ID')
+    return herdr.readPane(paneId.trim(), source === 'recent' || source === 'recent-unwrapped' ? { source } : { source: 'visible' })
+  })
+  ipcMain.handle('herdr:createWorkspace', (_e, cwd: string, label: string) => {
+    const safeCwd = resolve(String(cwd ?? ''))
+    if (!existsSync(safeCwd) || !statSync(safeCwd).isDirectory()) throw new Error('工作目录不存在')
+    return herdr.createWorkspace(safeCwd, String(label ?? '').trim().slice(0, 80) || 'agentui')
+  })
+  ipcMain.handle('herdr:setAssociation', (_e, projectId: string, association: HerdrAssociation | null) => {
+    if (typeof projectId !== 'string' || !projectId) throw new Error('缺少项目 ID')
+    if (association === null) return herdr.setAssociation(projectId, null)
+    if (typeof association !== 'object' || typeof association.workspaceId !== 'string' || !association.workspaceId) {
+      throw new Error('无效的 Herdr 工作区关联')
+    }
+    return herdr.setAssociation(projectId, {
+      workspaceId: association.workspaceId,
+      label: typeof association.label === 'string' ? association.label.slice(0, 80) : '未命名',
+      cwd: typeof association.cwd === 'string' ? association.cwd : '',
+      savedAt: Date.now(),
+    })
+  })
+  ipcMain.handle('herdr:updateSettings', (_e, patch: { customPath?: string | null; session?: HerdrSessionMode }) => {
+    if (patch === null || typeof patch !== 'object') throw new Error('无效的 Herdr 设置')
+    if (patch.session !== undefined && patch.session !== 'default' && patch.session !== 'agentui') {
+      throw new Error('无效的 Herdr 会话模式')
+    }
+    if (patch.customPath !== undefined && patch.customPath !== null && (typeof patch.customPath !== 'string' || !patch.customPath.trim())) {
+      throw new Error('无效的 herdr 路径')
+    }
+    return herdr.updateSettings(patch)
+  })
+  ipcMain.handle('herdr:focusTab', (_e, tabId: string) => {
+    if (typeof tabId !== 'string' || !tabId.trim()) throw new Error('缺少 Herdr 标签页 ID')
+    return herdr.focusTab(tabId.trim())
+  })
+  ipcMain.handle('herdr:launchAgent', (_e, kind: HerdrLaunchKind, cwd: string, workspaceLabel: string, projectId?: string | null) => {
+    if (!HERDR_AGENT_KINDS.includes(kind)) throw new Error('不支持的 Herdr 引擎类型')
+    const safeCwd = resolve(String(cwd ?? ''))
+    if (!existsSync(safeCwd) || !statSync(safeCwd).isDirectory()) throw new Error('工作目录不存在')
+    return herdr.launchAgent(kind, safeCwd, String(workspaceLabel ?? '').trim().slice(0, 80) || 'agentui', projectId ?? null)
+  })
+  ipcMain.handle('herdr:attachStream', (_e, paneId: string, options: HerdrAttachOptions) => {
+    if (typeof paneId !== 'string' || !paneId.trim()) throw new Error('缺少 Herdr 面板 ID')
+    if (options?.mode !== 'observe' && options?.mode !== 'control') throw new Error('无效的 Herdr 流模式')
+    return herdr.attachStream(paneId.trim(), {
+      mode: options.mode,
+      cols: Number(options?.cols) || 120,
+      rows: Number(options?.rows) || 40,
+      takeover: options?.takeover === true,
+      connectionId: options.connectionId,
+    })
+  })
+  ipcMain.handle('herdr:streamInput', (_e, streamId: string, text: string) => {
+    if (typeof streamId !== 'string' || !streamId) throw new Error('缺少 Herdr 流 ID')
+    if (typeof text !== 'string') throw new Error('无效的终端输入')
+    return herdr.streamInput(streamId, text)
+  })
+  ipcMain.handle('herdr:streamResize', (_e, streamId: string, cols: number, rows: number) => {
+    if (typeof streamId !== 'string' || !streamId) throw new Error('缺少 Herdr 流 ID')
+    return herdr.streamResize(streamId, Number(cols) || 120, Number(rows) || 40)
+  })
+  ipcMain.handle('herdr:releaseStream', (_e, streamId: string) => {
+    if (typeof streamId !== 'string' || !streamId) throw new Error('缺少 Herdr 流 ID')
+    return herdr.releaseStream(streamId)
+  })
+
   ipcMain.handle('browser:status', (_e, refresh?: boolean) => browserCompanion.getStatus(refresh === true))
   ipcMain.handle('browser:spaces', () => browserCompanion.listSpaces())
   ipcMain.handle('browser:tabs', () => browserCompanion.listTabs())
@@ -405,6 +483,13 @@ export function registerIpcHandlers(deps: {
       .flatMap((id) => scanCliSessions(id, statuses[id].sessionRoot, 25))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 40)
+  })
+
+  ipcMain.handle('sessions:search', (_e, query: string, options?: import('@shared/session-search').SessionSearchOptions) => {
+    if (typeof query !== 'string') {
+      return { query: '', results: [], indexedFiles: 0, durationMs: 0 }
+    }
+    return sessionSearch.search(query, options)
   })
 
   ipcMain.handle('git:status', (_e, cwd: string) => git.getStatus(cwd))

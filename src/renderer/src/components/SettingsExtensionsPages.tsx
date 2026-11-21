@@ -30,7 +30,8 @@ import {
   type UsageFilters,
   type UsageReport,
 } from '@shared/extensions'
-import { errorText, Segments } from './SettingsControls'
+import { errorText, Segments, SettingsRow } from './SettingsControls'
+import { DEFAULT_HERDR_SETTINGS, HERDR_SESSION_AGENTUI, normalizeHerdrSettings, type HerdrSessionMode, type HerdrSettings, type HerdrStatus, type HerdrStatusReport } from '@shared/herdr'
 import { MarkdownView } from './MarkdownView'
 
 export function EngineSwitcher({ engine, onChange }: { engine: ExtensionEngine; onChange: (engine: ExtensionEngine) => void }) {
@@ -970,6 +971,196 @@ export function BrowserSettingsPage({ onOpenBrowserWindow }: { onOpenBrowserWind
         <dd>{ego ? `${ego.mcpServers.filter((s) => s.browserLike).length} 个浏览器型 / ${ego.mcpServers.length} 个总数` : '—'}</dd>
       </dl>
       <p className="settings-caption">ego-browser 是独立于窗口浏览器的可选外部入口（工作区「浏览器」面板）；后续按引擎接入主动浏览工具与标签页授权。</p>
+    </section>
+  </div>
+}
+
+// ── Herdr 持久终端 ──────────────────────────────────────────────────────
+
+export function HerdrSettingsPage({ projects }: { projects: ProjectEntry[] }) {
+  const [report, setReport] = useState<HerdrStatusReport | null>(null)
+  const [settings, setSettings] = useState<HerdrSettings>(DEFAULT_HERDR_SETTINGS)
+  const [pathDraft, setPathDraft] = useState('')
+  const [testResult, setTestResult] = useState<HerdrStatus | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<string | null>(null)
+
+  const load = useCallback(async (refresh = false) => {
+    setBusy('load')
+    setError(null)
+    try {
+      const [nextReport, state] = await Promise.all([
+        window.agentui.herdrStatus(refresh),
+        window.agentui.getState(),
+      ])
+      setReport(nextReport)
+      const normalized = normalizeHerdrSettings(state.herdr)
+      setSettings(normalized)
+      setPathDraft(normalized.customPath ?? '')
+      setTestResult(null)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(null)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  async function applySettings(patch: { customPath?: string | null; session?: HerdrSessionMode }) {
+    setBusy('save')
+    setError(null)
+    setFeedback(null)
+    try {
+      const next = await window.agentui.herdrUpdateSettings(patch)
+      setSettings(next)
+      setPathDraft(next.customPath ?? '')
+      setTestResult(null)
+      const nextReport = await window.agentui.herdrStatus(true)
+      setReport(nextReport)
+      setFeedback('已保存并重新检测')
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function testPath() {
+    setBusy('test')
+    setError(null)
+    try {
+      setTestResult(await window.agentui.herdrTestPath(pathDraft))
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function startServer() {
+    setBusy('server')
+    setError(null)
+    setFeedback(null)
+    try {
+      await window.agentui.herdrStartServer()
+      await load()
+      setFeedback('Herdr 服务已启动')
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function clearAssociation(projectId: string) {
+    setBusy(`assoc-${projectId}`)
+    try {
+      const next = await window.agentui.herdrSetAssociation(projectId, null)
+      setSettings(normalizeHerdrSettings(next))
+      setFeedback('已清除关联')
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const associationCount = Object.keys(settings.associations).length
+
+  return <div className="settings-extensions-page">
+    <div className="settings-page-heading">
+      <h1>Herdr</h1>
+      <p>可选的持久终端集成：Herdr 负责终端进程、分屏与会话恢复，AgentUI 负责项目导航、显示与内嵌观察/接管。</p>
+    </div>
+    {error && <p className="settings-feedback is-error" role="alert"><CircleAlert size={14} />{error}</p>}
+    {feedback && <p className="settings-feedback is-success" role="status">{feedback}</p>}
+
+    <section className="settings-card settings-section">
+      <div className="settings-section-heading">
+        <h2>本机检测</h2>
+        <button type="button" className="btn-small" disabled={busy === 'load'} onClick={() => void load(true)}>
+          <RefreshCw size={13} className={busy === 'load' ? 'spin' : undefined} />重新检测
+        </button>
+      </div>
+      <dl className="settings-engine-meta">
+        <dt>herdr CLI</dt>
+        <dd>{report ? (report.status.available ? `可用 · ${report.status.version ?? ''}` : report.status.error ?? '未找到') : '检测中…'}</dd>
+        <dt>路径</dt>
+        <dd>{report?.status.path ?? '—'}</dd>
+        <dt>Herdr 服务</dt>
+        <dd>{report
+          ? (report.server.running
+            ? <>运行中{report.server.version ? ` · v${report.server.version}` : ''}
+              <button type="button" className="btn-small" style={{ marginLeft: 8 }} disabled={!!busy} onClick={() => void startServer()}>确保运行</button>
+            </>
+            : <>未运行{report.status.available && <button type="button" className="btn-small" style={{ marginLeft: 8 }} disabled={busy === 'server'} onClick={() => void startServer()}>启动服务</button>}</>)
+          : '—'}</dd>
+        <dt>CLI 会话</dt>
+        <dd>{report ? (report.session === 'agentui' ? `独立 ${HERDR_SESSION_AGENTUI} 会话` : '默认会话') : '—'}</dd>
+      </dl>
+      <p className="settings-caption">Herdr 服务与终端进程完全由 Herdr 管理，关闭 AgentUI 不影响其中运行的任务；AgentUI 只在退出时释放自己的终端流。</p>
+    </section>
+
+    <SettingsRow id="herdr-path" label="herdr 可执行文件路径" description="默认按 PATH 自动发现；检测失败时可手动指定 herdr.exe / herdr 的绝对路径。">
+      <div className="settings-path-editor">
+        <input type="text" value={pathDraft} placeholder="例如 D:\Tools\Apps\herdr\...\herdr.exe" onChange={(e) => setPathDraft(e.target.value)} />
+        <button type="button" className="btn-small" disabled={busy === 'test' || !pathDraft.trim()} onClick={() => void testPath()}>
+          {busy === 'test' ? '测试中…' : '测试'}
+        </button>
+        <button type="button" className="btn-small" disabled={!!busy || !testResult?.available}
+          onClick={() => void applySettings({ customPath: pathDraft.trim() || null })}>保存</button>
+        {settings.customPath && (
+          <button type="button" className="btn-small" disabled={!!busy} onClick={() => void applySettings({ customPath: null })}>恢复自动检测</button>
+        )}
+      </div>
+      {testResult && (
+        <p className={`settings-feedback ${testResult.available ? 'is-success' : 'is-error'}`} role="status">
+          {testResult.available ? `可用 · ${testResult.version ?? ''} · ${testResult.path}` : testResult.error ?? '不可用'}
+        </p>
+      )}
+    </SettingsRow>
+
+    <SettingsRow id="herdr-session" label="CLI 会话" description="默认会话与你在终端运行 herdr 的会话相同；独立会话（agentui）把 AgentUI 打开的工作区与手动使用的会话分开。切换后新操作生效。">
+      <Segments<HerdrSessionMode>
+        labelId="herdr-session-mode"
+        value={settings.session}
+        options={[
+          { value: 'default', label: '默认会话' },
+          { value: 'agentui', label: '独立 agentui 会话' },
+        ]}
+        onChange={(mode) => void applySettings({ session: mode })}
+      />
+    </SettingsRow>
+
+    <section className="settings-card settings-section" id="herdr-associations">
+      <h2>项目关联</h2>
+      <p className="settings-caption">终端面板按工作目录自动匹配 Herdr 工作区；手动关联只影响无法自动匹配的项目。</p>
+      {associationCount === 0
+        ? <p className="settings-caption">当前没有手动关联。</p>
+        : <ul className="ext-browser-notes">
+          {Object.entries(settings.associations).map(([projectId, assoc]) => {
+            const project = projects.find((p) => p.id === projectId)
+            return (
+              <li key={projectId}>
+                <span>{project?.name ?? projectId} → 工作区「{assoc.label}」</span>
+                <button type="button" className="btn-small" disabled={busy === `assoc-${projectId}`}
+                  onClick={() => void clearAssociation(projectId)}>清除</button>
+              </li>
+            )
+          })}
+        </ul>}
+    </section>
+
+    <section className="settings-card settings-section">
+      <h2>使用说明</h2>
+      <ul className="ext-browser-notes">
+        <li>终端面板顶部可切换「命令运行」（本机非 PTY 运行器）与「Herdr 终端」（持久终端）。</li>
+        <li>Herdr 视图按当前项目目录匹配工作区；未匹配时可手动关联，或用项目目录新建工作区。</li>
+        <li>选中面板后默认只读观察；点「接管输入」后键盘/粘贴经 Herdr 转发——同一终端同时只允许一个控制端，关闭面板即释放。</li>
+        <li>「新建 Pi / OMP 会话」经 herdr agent start 启动，Herdr 侧可见运行/等待确认状态；Prime 以普通终端命令运行。</li>
+      </ul>
     </section>
   </div>
 }

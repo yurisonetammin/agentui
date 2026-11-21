@@ -1,0 +1,45 @@
+appId: com.agentui.desktop
+productName: AgentUI
+copyright: Copyright © 2026 AgentUI
+
+directories:
+  output: release
+  buildResources: assets
+
+asar: true
+npmRebuild: false
+buildDependenciesFromSource: false
+
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+
+extraResources:
+  - from: assets/icon.ico
+    to: assets/icon.ico
+  - from: assets/icon.png
+    to: assets/icon.png
+
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AgentUI
+  uninstallDisplayName: AgentUI
+  artifactName: "${productName}-Setup-${version}-${arch}.${ext}"
+
+portable:
+  artifactName: "${productName}-Portable-${version}-${arch}.${ext}"

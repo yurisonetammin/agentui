@@ -516,6 +516,28 @@ kbd { color: var(--text-muted); font: 12px/1.5 var(--mono); white-space: nowrap;
 .palette-results > button { width: 100%; text-align: start; display: flex; align-items: center; gap: 9px; border-radius: var(--radius-small); padding: 7px; }
 .palette-results button:hover, .palette-results button[aria-selected="true"] { background: var(--bg-hover); }
 .palette-group { color: var(--text-muted); font-size: 12px; width: 38px; flex-shrink: 0; }
+.palette-group.is-fts { color: var(--accent); font-weight: 500; }
+.palette-fts-bar {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.palette-snippet {
+  display: block;
+  color: var(--text-secondary) !important;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-highlight {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-radius: 3px;
+  padding: 0 2px;
+}
 .palette-label { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .palette-label small { display: block; color: var(--text-muted); font-size: 12px; }
 .palette-arrow { color: var(--text-muted); flex-shrink: 0; }
@@ -586,3 +608,183 @@ button:focus-visible, summary:focus-visible, select:focus-visible, [role="button
 .browser-tab-row { width: 100%; text-align: start; cursor: pointer; }
 .browser-tab-row:disabled { cursor: default; opacity: 0.7; }
 .browser-tab-row.active { background: var(--bg-hover); }
+
+/* ── 终端面板视图切换（命令运行 / Herdr 终端） ─────────────────────── */
+.terminal-mode-bar {
+  display: flex;
+  gap: 2px;
+  padding: 2px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.terminal-mode-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 10px 5px;
+  cursor: pointer;
+}
+.terminal-mode-tab:hover { color: var(--text-primary); }
+.terminal-mode-tab.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Herdr 面板 ────────────────────────────────────────────────────── */
+.herdr-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  overflow: auto;
+}
+.herdr-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.herdr-server-state { font-size: 12px; color: var(--text-secondary); }
+.herdr-toolbar-actions { display: inline-flex; align-items: center; gap: 6px; }
+.herdr-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.herdr-dot-working { background: #d8a657; }
+.herdr-dot-blocked { background: #ea6962; }
+.herdr-dot-done { background: #a9b665; }
+.herdr-dot-idle { background: #7daea3; }
+.herdr-dot-unknown { background: var(--text-muted); }
+.herdr-project-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.herdr-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
+.herdr-section-actions { display: inline-flex; gap: 6px; }
+.herdr-workspace { display: flex; flex-direction: column; gap: 4px; }
+.herdr-workspace-head { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); }
+.herdr-workspace-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.herdr-workspace-meta { color: var(--text-muted); font-size: 11px; }
+.herdr-pane-list { list-style: none; margin: 0; padding: 0 0 0 18px; display: flex; flex-direction: column; gap: 2px; }
+.herdr-tab-group { display: flex; flex-direction: column; gap: 2px; }
+.herdr-tab-label { font-size: 11px; color: var(--text-muted); padding: 2px 0; }
+.herdr-pane-row { display: flex; align-items: center; gap: 4px; }
+.herdr-pane-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+.herdr-pane-btn:hover, .herdr-pane-row.is-selected .herdr-pane-btn { background: var(--accent-soft); color: var(--text-primary); }
+.herdr-pane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.herdr-pane-cwd { color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.herdr-associate { display: flex; flex-direction: column; gap: 6px; }
+.herdr-associate .panel-placeholder { margin: 0; }
+.herdr-associate-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.herdr-launch-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.herdr-launch-label { font-size: 12px; color: var(--text-secondary); }
+.herdr-others { display: flex; flex-direction: column; gap: 6px; }
+.herdr-others-toggle {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.herdr-others-toggle:hover { color: var(--text-primary); }
+.herdr-inspector {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 140px;
+  overflow: hidden;
+}
+.herdr-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.herdr-inspector-title { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.herdr-inspector-meta { font-size: 11px; color: var(--text-muted); flex: 1; }
+.herdr-inspector-actions { display: inline-flex; gap: 4px; }
+.herdr-preview-wrap { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.herdr-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.herdr-preview {
+  margin: 0;
+  padding: 0 10px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow: auto;
+  color: var(--text-secondary);
+  min-height: 90px;
+  max-height: 220px;
+}
+
+/* ── Herdr 实时终端（xterm.js） ────────────────────────────────────── */
+.herdr-terminal-view { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.herdr-terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+}
+.herdr-terminal-title { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.herdr-terminal-state { font-size: 11px; }
+.herdr-terminal-state.is-live { color: var(--accent); }
+.herdr-terminal-state.is-dead { color: var(--text-muted); }
+.herdr-terminal-actions { margin-left: auto; display: inline-flex; gap: 6px; }
+.herdr-terminal-hint { margin: 0 10px 4px; font-size: 11px; color: var(--text-muted); }
+.herdr-takeover-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 10px 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.herdr-takeover-confirm div { display: inline-flex; gap: 6px; }
+.herdr-terminal-host { flex: 1; min-height: 120px; padding: 0 10px 8px; }
+.herdr-terminal-host .xterm { height: 100%; }
+.btn-ghost.is-active { color: var(--text-primary); background: var(--accent-soft); }

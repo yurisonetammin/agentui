@@ -68,6 +68,30 @@ const api: AgentUiApi = {
   readWorkspaceFile: (cwd: string, relPath: string) => ipcRenderer.invoke('workspace:readFile', cwd, relPath),
   terminalStart: (cwd: string, command: string) => ipcRenderer.invoke('terminal:start', cwd, command),
   terminalStop: (runId: string) => ipcRenderer.invoke('terminal:stop', runId),
+  onTerminalOutput: (cb) => subscribe('agentui:terminalOutput', cb),
+  onTerminalExit: (cb) => subscribe('agentui:terminalExit', cb),
+
+  herdrStatus: (refresh?: boolean) => ipcRenderer.invoke('herdr:status', refresh),
+  herdrTestPath: (path: string) => ipcRenderer.invoke('herdr:testPath', path),
+  herdrStartServer: () => ipcRenderer.invoke('herdr:startServer'),
+  herdrSnapshot: (connectionId?: number) => ipcRenderer.invoke('herdr:snapshot', connectionId),
+  herdrReadPane: (paneId: string, source?: 'visible' | 'recent' | 'recent-unwrapped') => ipcRenderer.invoke('herdr:readPane', paneId, source),
+  herdrCreateWorkspace: (cwd: string, label: string) => ipcRenderer.invoke('herdr:createWorkspace', cwd, label),
+  herdrSetAssociation: (projectId: string, association: import("@shared/herdr").HerdrAssociation | null) =>
+    ipcRenderer.invoke('herdr:setAssociation', projectId, association),
+  herdrUpdateSettings: (patch: { customPath?: string | null; session?: import("@shared/herdr").HerdrSessionMode }) =>
+    ipcRenderer.invoke('herdr:updateSettings', patch),
+  herdrFocusTab: (tabId: string) => ipcRenderer.invoke('herdr:focusTab', tabId),
+  herdrLaunchAgent: (kind: import('@shared/herdr').HerdrLaunchKind, cwd: string, workspaceLabel: string, projectId?: string | null) =>
+    ipcRenderer.invoke('herdr:launchAgent', kind, cwd, workspaceLabel, projectId ?? null),
+  herdrAttachStream: (paneId: string, options: import('@shared/herdr').HerdrAttachOptions) =>
+    ipcRenderer.invoke('herdr:attachStream', paneId, options),
+  herdrStreamInput: (streamId: string, text: string) => ipcRenderer.invoke('herdr:streamInput', streamId, text),
+  herdrStreamResize: (streamId: string, cols: number, rows: number) => ipcRenderer.invoke('herdr:streamResize', streamId, cols, rows),
+  herdrReleaseStream: (streamId: string) => ipcRenderer.invoke('herdr:releaseStream', streamId),
+  onHerdrFrame: (cb) => subscribe('agentui:herdrFrame', cb),
+  onHerdrStreamClosed: (cb) => subscribe('agentui:herdrStreamClosed', cb),
+  onHerdrConnectionChanged: (cb) => subscribe('agentui:herdrConnectionChanged', cb),
   browserStatus: (refresh?: boolean) => ipcRenderer.invoke('browser:status', refresh),
   browserSpaces: () => ipcRenderer.invoke('browser:spaces'),
   browserTabs: () => ipcRenderer.invoke('browser:tabs'),
@@ -78,6 +102,8 @@ const api: AgentUiApi = {
   getThreadForkTree: (threadId: string) => ipcRenderer.invoke('threads:getForkTree', threadId),
   forkThread: (input: ForkThreadInput) => ipcRenderer.invoke('threads:fork', input),
   listCliSessions: (harness?: HarnessId) => ipcRenderer.invoke('sessions:listCli', harness),
+  searchSessions: (query: string, options?: import('@shared/session-search').SessionSearchOptions) =>
+    ipcRenderer.invoke('sessions:search', query, options),
   gitGetStatus: (cwd: string) => ipcRenderer.invoke('git:status', cwd),
   gitGetDiff: (cwd: string, filePath?: string, staged?: boolean) => ipcRenderer.invoke('git:diff', cwd, filePath, staged),
   gitStageFile: (cwd: string, filePath: string) => ipcRenderer.invoke('git:stage', cwd, filePath),
@@ -92,8 +118,6 @@ const api: AgentUiApi = {
   onThreadEvent: (cb: (envelope: ThreadEventEnvelope) => void) => subscribe('agentui:threadEvent', cb),
   onThreadStatus: (cb: (update: ThreadStatusUpdate) => void) => subscribe('agentui:threadStatus', cb),
   onExtensionUiRequest: (cb: (req: ExtensionUiRequest) => void) => subscribe('agentui:extensionUiRequest', cb),
-  onTerminalOutput: (cb) => subscribe('agentui:terminalOutput', cb),
-  onTerminalExit: (cb) => subscribe('agentui:terminalExit', cb),
 
   // ── 设置：MCP / 插件 / 技能 / 使用情况 ──
   getEngineMcp: (engine: ExtensionEngine, projectPath?: string | null) =>

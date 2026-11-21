@@ -18,6 +18,7 @@
 | [src/shared/event-reducer.ts](src/shared/event-reducer.ts) | 纯函数 `applyRpcEventToTimeline()`，将 RPC 事件归约成时间线条目 |
 | [src/shared/ui-queue.ts](src/shared/ui-queue.ts) | 纯函数多会话 `ExtensionUiRequest` 队列管理 |
 | [src/shared/shortcuts.ts](src/shared/shortcuts.ts) | 纯函数全局快捷键匹配与速查清单 `SHORTCUT_HINTS` |
+| [src/shared/herdr.ts](src/shared/herdr.ts) | Herdr 共享类型与纯函数：CLI JSON 信封/快照解析（真实输出夹具）、项目↔工作区匹配、`HerdrSettings` 规范化 |
 | [src/shared/composer-autocomplete.ts](src/shared/composer-autocomplete.ts) | 纯函数 `@file` / `/slash` 触发检测、路径模糊评分与内置斜杠命令解析 |
 | [src/shared/capabilities.ts](src/shared/capabilities.ts) | 7 引擎 × 11 项能力矩阵 `HARNESS_CAPABILITIES` 与桥接限制脚注（设置页展示） |
 | [src/shared/tool-policy.ts](src/shared/tool-policy.ts) | 纯函数项目信任策略：`TrustPreset`（只读/审批/自动）、只读命令分类、约 21 条高风险规则、`assessToolRequest` / `decideApproval` / `pickSelectOption` |
@@ -42,6 +43,7 @@
 | [electron/main/workspace-files.ts](electron/main/workspace-files.ts) | `WorkspaceFileService`：基于 `git ls-files -z`（含非 Git 目录回退）与短缓存的 `@file` 文件索引 |
 | [electron/main/workspace-browser.ts](electron/main/workspace-browser.ts) | `WorkspaceBrowserService`：文件树懒加载 listing 与只读预览（路径越界守卫、隐藏目录过滤、512KB 截断、二进制检测、语言识别） |
 | [electron/main/terminal-service.ts](electron/main/terminal-service.ts) | `TerminalService`：零原生非 PTY 命令运行器（显式 shell 进程、并发上限 4、10 分钟超时、进程树强杀） |
+| [electron/main/herdr-service.ts](electron/main/herdr-service.ts) | `HerdrService`：可选 Herdr 持久终端集成——CLI 检测（60s 缓存）、`herdr` 子命令封装（`prepareExecutableSpawn` + `shell:false`）、`api snapshot`/工作区/关联/pane read/agent 启动、`terminal session observe|control` 流子进程管理（NDJSON→帧事件、接管/释放） |
 | [electron/main/extensions/](electron/main/extensions/) | `engine-cli.ts`（三引擎 CLI 子命令执行，带 `harnessChildEnvironment` 环境修正）、`mcp-service.ts`（Pi `pi mcp add/remove/list --json`、OMP 自有配置直写 + 第三方来源覆盖展示、Prime `prime-agent mcp`；含「配置改动对运行中会话的生效状态」）、`package-service.ts`（`pi install/remove/update/list`、`omp plugin`、`prime-agent package`）、`skill-service.ts`（`omp skill list --json`、Pi/Prime 技能目录扫描、`readSkillFile` 白名单预览） |
 | [electron/main/usage-service.ts](electron/main/usage-service.ts) | `UsageService`：`.jsonl` 会话用量提取 + 按记录键全局去重（恢复/分叉/回放不重复入账）、`get_session_stats` 校验会话总量、`omp stats/usage` 与 `prime-agent sessions --json` 引擎全局统计（与项目明细分开，不重叠相加） |
 | [electron/main/browser-window-service.ts](electron/main/browser-window-service.ts) | `BrowserWindowService`：独立多标签浏览器窗口（每标签一个 `WebContentsView`、`persist:agentui-browser` 隔离会话、权限请求默认拒绝、弹窗转新标签、仅 http(s)、`browserWin:setInsets` 挂载视图）；链接/选中文本/截图经 `agentui:shareToComposer` 填入指定会话输入框 |
@@ -49,7 +51,7 @@
 | [electron/main/git/git-service.ts](electron/main/git/git-service.ts) | `GitService`：`status -z`、staged/unstaged/untracked diff、Stage/Unstage/Discard/Commit、Worktree 增删 |
 | [electron/preload/index.ts](electron/preload/index.ts) | 通过 `contextBridge.exposeInMainWorld('agentui', api)` 暴露只读安全 API |
 | [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、时间线虚拟滚动（react-virtual 动态测高 + 贴底跟随）、`@file`/`/slash` 补全、图片粘贴/拖拽、分叉树与对比、在对应会话时间线内排队显示 `ExtensionUiCard`、模型/Thinking 切换、Steer/Follow-up/Abort |
-| [src/renderer/src/components/](src/renderer/src/components/) | `WorkbenchHeader`（标题栏、工作区工具与独立浏览器按钮）、`CommandPalette`（搜索会话与快速导航，含「打开独立浏览器」）、`Sidebar`（可折叠项目、会话与引擎状态）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（变更、文件、终端、浏览器与工作树标签，支持预览回合 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsPage`（引擎与模型、**MCP 服务器、插件、技能、使用情况、浏览器**、外观与布局、会话与快捷键、项目与权限、诊断与关于；MCP/插件/技能共用 Pi/OMP/Prime 切换器）、`SettingsExtensionsPages`（五个新入口的实现，含添加服务器表单、插件安装/卸载、技能预览与插入输入框、用量报表三卡与筛选、浏览器窗口说明）、`ShortcutsModal`、`ExtensionUiCard`（内嵌审批、权限预设与高风险命令）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
+| [src/renderer/src/components/](src/renderer/src/components/) | `WorkbenchHeader`（标题栏、工作区工具与独立浏览器按钮）、`CommandPalette`（搜索会话与快速导航，含「打开独立浏览器」）、`Sidebar`（可折叠项目、会话与引擎状态）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（变更、文件、终端、浏览器与工作树标签，支持预览回合 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`HerdrPanel`（Herdr 工作区树/Agent 状态/只读快照/关联与新建会话）、`HerdrTerminalView`（xterm.js 实时终端：观察默认、接管输入、关闭释放控制权）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsPage`（引擎与模型、**MCP 服务器、插件、技能、使用情况、浏览器、Herdr**、外观与布局、会话与快捷键、项目与权限、诊断与关于；MCP/插件/技能共用 Pi/OMP/Prime 切换器）、`SettingsExtensionsPages`（五个新入口的实现，含添加服务器表单、插件安装/卸载、技能预览与插入输入框、用量报表三卡与筛选、浏览器窗口说明）、`ShortcutsModal`、`ExtensionUiCard`（内嵌审批、权限预设与高风险命令）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
 | [src/renderer/browser.html + browser-src/](src/renderer/browser.html) | 独立浏览器窗口渲染端（第二 Vite 入口）：标签条、地址栏、前进后退、刷新/停止、分享面板（链接/选中文本/截图 → 选目标会话）；`Ctrl+T`/`Ctrl+W` 管理标签 |
 | [tests/](tests/) | Vitest 单元测试套件（当前 22 个测试文件；`claude-live-handshake.test.ts` 为真实 CLI 集成测试，未安装时自动跳过；`browser-companion.test.ts` 含真实 ego 探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例；`p1-fixes.test.ts` 覆盖 P1 评审修复：Claude/Codex 桥接去重与审批撤销、set_model 双层回滚、Codex 信任预设沙箱联动、MCP TOML 解析；`extensions.test.ts` 覆盖 MCP 配置覆盖合并、OMP 配置读写、CLI 输出解析、用量去重聚合与地址栏规范化） |
 
@@ -84,11 +86,17 @@
 13. **扩展设置页的读写边界**：
    MCP/插件/技能只对 **Pi / OMP / Prime** 三引擎开放（`EXTENSION_ENGINE_CAPABILITIES` 按真实 CLI 能力标注）。MCP 编辑写入引擎自有配置（Pi 经 `pi mcp add/remove`、Prime 经 `prime-agent mcp`、OMP 直接原子写 `mcp.json`/`.omp/mcp.json`），第三方来源（Claude/Codex/Gemini/Cursor/Windsurf/VS Code/项目根回退）一律只读展示并按 OMP 文档的 rank 标注「被覆盖」关系；环境变量与请求头只展示键名，不展示值。`EngineSkillService.readSkillFile` 只允许预览最近一次技能发现返回的文件路径（白名单），不得放开为任意路径读取。用量统计在 `aggregateUsage` 内按记录键（单次模型调用）去重，`extractUsageRecordsFromSession` 兼容 Pi/OMP/Prime（`usage.cost.total`）与 Claude（`input_tokens`）两种记录；缺失的费用/Token 必须显示「未提供」，引擎全局统计（omp stats / prime sessions）与项目明细分开展示，严禁相加。
 
+14. **Herdr 服务与终端进程归 Herdr 管，AgentUI 只释放自己的流**：
+    `HerdrService` 以 `herdr server`（detached）拉起的服务和其中的终端 pane 生命周期完全由 Herdr 管理，`before-quit` 只调用 `herdr.stopStreams()`（observe/control 流子进程），**严禁**在退出路径停止 Herdr 服务或强杀 pane。所有 `herdr` CLI 调用必须经 `prepareExecutableSpawn`（`shell: false`）；流输出必须用 `StrictJsonlDecoder` 按 LF 切分（铁律 3 同样适用于 `terminal.frame` JSON）；同一终端同时只允许一个控制端，接管需显式确认，关闭面板即 `terminal.release`。零原生铁律不变：xterm.js（`@xterm/xterm`）为纯 JS 渲染。
+
 ## 4. 常用命令
 
 ```bash
-npm run typecheck   # tsc --noEmit 检查 node(main/preload/shared/tests) 与 web(renderer)
-npm test            # Vitest 单元测试
-npm run build       # electron-vite 构建至 out/
-npm run dev         # Electron + Vite HMR 开发模式
+npm run typecheck          # tsc --noEmit 检查 node(main/preload/shared/tests) 与 web(renderer)
+npm test                   # Vitest 单元测试
+npm run test:e2e           # Playwright Electron 端到端回归测试（可设 AGENTUI_E2E_EXECUTABLE 测试打包 exe）
+npm run build              # electron-vite 构建至 out/
+npm run dist:win           # 构建并生成 Windows NSIS 安装包与便携包至 release/
+npm run version:set -- 0.2.0  # 注入版本号至 package.json / package-lock.json（支持 patch/minor/major/--print）
+npm run dev                # Electron + Vite HMR 开发模式
 ```

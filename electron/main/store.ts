@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { HARNESS_IDS, type PersistedState } from '@shared/types'
 import { DEFAULT_APPEARANCE, DEFAULT_CONVERSATION, normalizeAppearance, normalizeConversation, normalizeHarnessSettings } from '@shared/settings'
+import { DEFAULT_HERDR_SETTINGS, normalizeHerdrSettings } from '@shared/herdr'
 import { isTrustPreset } from '@shared/tool-policy'
 
 const DEFAULT_STATE: PersistedState = {
@@ -13,6 +14,7 @@ const DEFAULT_STATE: PersistedState = {
   conversation: DEFAULT_CONVERSATION,
   defaultProjectTrust: 'approval',
   harnessDefaults: {},
+  herdr: DEFAULT_HERDR_SETTINGS,
   activeHarness: 'pi',
   activeProjectId: null,
   activeThreadId: null,
@@ -23,6 +25,10 @@ export class StateStore {
 
   constructor(private readonly filePath = join(homedir(), '.agentui', 'state.json')) {
     this.state = this.loadFromDisk()
+  }
+
+  get path(): string {
+    return this.filePath
   }
 
   private loadFromDisk(): PersistedState {
@@ -44,6 +50,7 @@ export class StateStore {
         conversation: normalizeConversation(raw.conversation),
         defaultProjectTrust: isTrustPreset(raw.defaultProjectTrust) ? raw.defaultProjectTrust : 'approval',
         harnessDefaults: normalizeHarnessSettings(raw.harnessDefaults),
+        herdr: normalizeHerdrSettings(raw.herdr),
         activeHarness: HARNESS_IDS.includes(raw.activeHarness as never) ? raw.activeHarness! : 'pi',
         activeProjectId: typeof raw.activeProjectId === 'string' ? raw.activeProjectId : null,
         activeThreadId: typeof raw.activeThreadId === 'string' ? raw.activeThreadId : null,

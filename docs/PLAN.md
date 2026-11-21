@@ -41,7 +41,7 @@
    - 验证状态：Claude Code 2.1.325 本机真实 CLI 握手 + 实窗冒烟通过；**Codex / ACP / dsh 适配器按公开协议实现，本机未安装对应 CLI，尚未端到端验证（实验性）**。
 2. **会话分支与历史增强**：
    - [x] 利用 Pi `fork` / OMP `branch` 协议与 `.jsonl` 活跃分支树构建「分叉节点树 + 多方案并行对比」面板，支持从任意历史提问跨引擎分叉并保留原对话。
-   - [ ] 本地会话索引与全文检索（在无 MSVC 时可选 WASM SQLite，或仅保留增量 JSONL 索引）。
+   - [x] 本地会话索引与全文检索（零原生增量 JSONL 索引 `session-index.json`，支持 Pi/OMP/Prime/Claude `.jsonl` 与内存会话，`Ctrl+K` 命令面板内嵌高亮检索与一键打开）。
 3. **高效输入与文件关联**：
    - [x] Composer 支持 `@file` 工作区文件模糊补全、`/` 斜杠命令提示（内置命令 + 引擎 `get_commands` Skill/模板）与剪贴板图片粘贴/拖拽上传。
    - [x] 右侧面板增加「文件树 + 只读代码高亮」（`Ctrl+Shift+E`，highlight.js 高亮、512KB 截断、二进制检测、路径越界防护、`@引用` 回注输入框）及可选内嵌终端（`Ctrl+Shift+T`）。
@@ -51,6 +51,7 @@
 
 - 受「零 C++ 原生模块」铁律约束（目标机无 MSVC/Rust 工具链），当前终端为**非 PTY 命令运行器**：每条命令经显式 shell 进程执行（Windows `cmd.exe /d /s /c`，POSIX `/bin/sh -c`），Node `spawn` 本身保持 `shell: false`；支持并发上限 4、10 分钟超时自动终止、进程树强杀、输出缓冲节流渲染。交互式 TTY 程序（vim、top 等）不在当前能力范围内，UI 已明示。
 - 升级路径：待确认编译工具链或 prebuild 可用性后，引入 `@lydell/node-pty`（预编译二进制分发）或 `node-pty-prebuilt-multiarch`，替换 `TerminalService` 的 spawn 层并接入 xterm.js；IPC 契约（`terminal:start/stop` + 输出/退出事件）可保持不变。
+- **已落地的无原生模块交互终端路径（2026-11-21）**：接入本机 [Herdr](https://herdr.dev/tui/docs/)（终端复用器，后台服务持有真实 PTY）。终端面板新增「Herdr 终端」视图：主进程经 `herdr terminal session observe`（只读流）/ `terminal session control`（接管输入）子进程以 NDJSON `terminal.frame`（base64 ANSI 整屏帧）驱动 xterm.js 渲染，关闭面板即 `terminal.release` 释放控制权；终端进程、分屏与会话恢复完全由 Herdr 管理（`herdr server` detached，退出不回收）。内建「命令运行」终端与该路径互补，未来若引入 prebuild PTY 仍按上条升级路径执行。
 
 ---
 
@@ -66,6 +67,6 @@
    - [x] 顶栏「浏览器」面板：ego 状态徽标、浏览器型 MCP 列表（仅状态展示，由各引擎自行连接）、快捷控制——在专属 `agentui-workbench` 空间打开 http(s) URL、列出标签页、**截图一键回贴输入框**（遵守 4 张 / 10MB 图片上限）。
    - [x] 脚本经临时 `.mjs` 文件 + `ego-browser nodejs -e "await import(...)"` 执行（`shell: false`、超时进程树强杀、串行队列、URL `JSON.stringify` 注入且仅允许 http(s)）；已处理 ego-browser（Chromium 系）管道模式下 console 输出走 **stderr** 的差异。
    - 验证状态：本机 ego-browser 0.6.3.14 真实打开 example.com → 标签页 → PNG 截图端到端通过（测试后空间已清理）。
-3. **自动化测试与安装包分发**：
-   - 引入基于 Playwright (`_electron.launch`) 的真实端到端回归套件。
-   - 配置 `electron-builder` 生成 Windows NSIS 安装包 / 绿色便携包及版本号注入脚本。
+3. **自动化测试与安装包分发**（已完成，2026-11-21）：
+   - [x] 引入基于 Playwright (`_electron.launch`) 的真实端到端回归套件（`playwright.config.ts` + `tests/e2e/app.spec.ts`，支持隔离 `AGENTUI_STATE_PATH` 与 `AGENTUI_E2E_EXECUTABLE` 校验打包后的 `.exe`）。
+   - [x] 配置 `electron-builder`（`electron-builder.yml`）生成 Windows NSIS 安装包 / 绿色便携包及版本号注入脚本（`scripts/bump-version.mjs`）。
