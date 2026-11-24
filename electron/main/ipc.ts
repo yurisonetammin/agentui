@@ -2,8 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { release } from 'node:os'
 import { basename, resolve } from 'node:path'
-import { app, dialog, ipcMain, nativeTheme, type BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, nativeTheme, shell, type BrowserWindow } from 'electron'
 import type { AppDiagnostics } from '@shared/diagnostics'
+import {
+  cleanGeneratedCommitMessage,
+  synthesizeHeuristicCommitMessage,
+  type GitCommitSuggestion,
+  type GitPrCreateInput,
+} from '@shared/git-pr'
 import { normalizeAppearance, normalizeConversation, normalizeHarnessDefaults, type AppearanceSettings, type ConversationSettings, type HarnessDefaults } from '@shared/settings'
 import {
   HARNESS_IDS,
@@ -16,12 +22,14 @@ import {
   type ThinkingLevel,
   type ThreadEntry,
 } from '@shared/types'
-import { isTrustPreset } from '@shared/tool-policy'
+import { isTrustPreset, normalizePermissionRules, type ToolPermissionRule } from '@shared/tool-policy'
 import { isExtensionEngine, type ExtensionEngine, type McpAddInput, type UsageFilters } from '@shared/extensions'
 import { HERDR_AGENT_KINDS, type HerdrAssociation, type HerdrAttachOptions, type HerdrLaunchKind, type HerdrSessionMode } from '@shared/herdr'
+import type { UpsertScheduledTaskInput } from '@shared/scheduler'
 import type { HarnessDiscoveryService } from './discovery'
 import type { BrowserCompanionService } from './browser-companion'
 import type { BrowserWindowService } from './browser-window-service'
+import { detectExternalEditors, openInExternalEditor } from './external-editor'
 import type { EngineMcpService } from './extensions/mcp-service'
 import type { EnginePackageService } from './extensions/package-service'
 import type { EngineSkillService } from './extensions/skill-service'
@@ -29,6 +37,7 @@ import type { GitService } from './git/git-service'
 import type { HerdrService } from './herdr-service'
 import type { ModelCatalogService } from './model-catalog'
 import type { RuntimeManager } from './rpc/manager'
+import type { ScheduleService } from './schedule-service'
 import { scanCliSessions } from './sessions/catalog'
 import type { SessionSearchService } from './sessions/search-index'
 import type { StateStore } from './store'
@@ -55,11 +64,13 @@ export function registerIpcHandlers(deps: {
   herdr: HerdrService
   runtimeManager: RuntimeManager
   sessionSearch: SessionSearchService
+  scheduleService: ScheduleService
+  onAppearanceChanged?: (appearance: AppearanceSettings) => void
 }): void {
   const {
     getWindow, store, discovery, models, git, workspaceFiles, workspaceBrowser,
     browserCompanion, browserWindow, engineMcp, enginePackages, engineSkills, usage, terminal, herdr, runtimeManager,
-    sessionSearch,
+    sessionSearch, scheduleService, onAppearanceChanged,
   } = deps
   const pendingPathUpdates = new Map<HarnessId, symbol>()
 
@@ -128,6 +139,7 @@ export function registerIpcHandlers(deps: {
     }
     store.mutate((draft) => { draft.appearance = appearance })
     nativeTheme.themeSource = appearance.theme
+    onAppearanceChanged?.(appearance)
     return appearance
   })
 
@@ -246,6 +258,35 @@ export function registerIpcHandlers(deps: {
     })
     if (!updated) throw new Error('项目不存在')
     return updated
+  })
+
+  ipcMain.handle('projects:setRules', (_e, projectId: string, rules: ToolPermissionRule[]) => {
+    const normalized = normalizePermissionRules(rules)
+    let updated: ProjectEntry | undefined
+    store.mutate((draft) => {
+      const target = draft.projects.find((p) => p.id === projectId)
+      if (target) {
+        target.permissionRules = normalized
+        updated = structuredClone(target)
+      }
+    })
+    if (!updated) throw new Error('项目不存在')
+    return updated
+  })
+
+  ipcMain.handle(
+    'threads:addSessionRule',
+    (_e, threadId: string, rule: Omit<ToolPermissionRule, 'id' | 'createdAt'>) => {
+      return runtimeManager.addSessionRule(threadId, rule)
+    },
+  )
+
+  ipcMain.handle('threads:getSessionRules', (_e, threadId: string) => {
+    return runtimeManager.getSessionRules(threadId)
+  })
+
+  ipcMain.handle('threads:clearSessionRules', (_e, threadId: string) => {
+    runtimeManager.clearSessionRules(threadId)
   })
 
   ipcMain.handle('threads:create', (_e, input: CreateThreadInput) => {
@@ -377,6 +418,20 @@ export function registerIpcHandlers(deps: {
     return workspaceBrowser.readFile(cwd, relPath)
   })
 
+  ipcMain.handle('workspace:writeFile', (_e, cwd: string, relPath: string, content: string) => {
+    if (typeof content !== 'string') throw new Error('无效的文件内容')
+    return workspaceBrowser.writeFile(cwd, relPath, content)
+  })
+
+  ipcMain.handle('workspace:listEditors', () => detectExternalEditors())
+
+  ipcMain.handle(
+    'workspace:openExternal',
+    (_e, cwd: string, relPath: string, line?: number, editor?: 'vscode' | 'cursor' | 'explorer') => {
+      return openInExternalEditor(cwd, relPath, line, editor)
+    },
+  )
+
   ipcMain.handle('terminal:start', (_e, cwd: string, command: string) => {
     return terminal.start(cwd, command)
   })
@@ -498,6 +553,42 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle('git:unstage', (_e, cwd: string, filePath: string) => git.unstageFile(cwd, filePath))
   ipcMain.handle('git:discard', (_e, cwd: string, filePath: string, untracked?: boolean) => git.discardFile(cwd, filePath, untracked))
   ipcMain.handle('git:commit', (_e, cwd: string, message: string) => git.commit(cwd, message))
+  ipcMain.handle('git:generateCommitMessage', async (_e, cwd: string, harness?: HarnessId): Promise<GitCommitSuggestion> => {
+    const { files, patch } = await git.getStagedDiffForCommit(cwd)
+    if (files.length === 0) {
+      throw new Error('请先暂存至少一个文件后再生成提交信息')
+    }
+    const prompt = [
+      '请根据以下已暂存的 Git 变更，仅输出一行精炼的 Conventional Commits 提交信息（格式：type(scope): subject，不超过 72 字符）。',
+      '要求：不要调用任何工具，不要输出代码块、引号、前言或解释，只输出那一行提交信息。',
+      '',
+      '变更文件：',
+      files.slice(0, 40).map((f) => `${f.status}\t${f.path}`).join('\n'),
+      '',
+      'Diff 片段：',
+      patch || '(仅文件名/二进制变更)',
+    ].join('\n')
+
+    const raw = await runtimeManager.generateOneShotText(prompt, harness)
+    const cleaned = raw ? cleanGeneratedCommitMessage(raw) : ''
+    if (cleaned) {
+      return { message: cleaned, source: 'ai' }
+    }
+    return {
+      message: synthesizeHeuristicCommitMessage(files),
+      source: 'heuristic',
+      note: '已根据暂存文件自动生成摘要',
+    }
+  })
+  ipcMain.handle('git:push', (_e, cwd: string) => git.push(cwd))
+  ipcMain.handle('git:getLinkedPr', (_e, cwd: string, refresh?: boolean) => git.getLinkedPr(cwd, refresh === true))
+  ipcMain.handle('git:createPr', async (_e, input: GitPrCreateInput) => {
+    const result = await git.createPr(input)
+    if (result.url && (result.url.startsWith('https://') || result.url.startsWith('http://'))) {
+      void shell.openExternal(result.url)
+    }
+    return result
+  })
   ipcMain.handle('git:createWorktree', (_e, repoPath: string, branchName: string, baseRef?: string) => git.createWorktree(repoPath, branchName, baseRef))
   ipcMain.handle('git:removeWorktree', (_e, repoPath: string, worktreePath: string, force?: boolean) => git.removeWorktree(repoPath, worktreePath, force))
 
@@ -548,6 +639,23 @@ export function registerIpcHandlers(deps: {
     }
     return usage.getReport(filters ?? {}, refresh === true)
   })
+
+  // ── 定时任务与 Prime 心跳 ─────────────────────────────────────────────
+  ipcMain.handle('schedules:list', () => scheduleService.snapshot())
+  ipcMain.handle('schedules:upsert', (_e, input: UpsertScheduledTaskInput) => {
+    if (!input || typeof input !== 'object') throw new Error('无效的定时任务参数')
+    return scheduleService.upsertTask(input)
+  })
+  ipcMain.handle('schedules:toggle', (_e, taskId: string, enabled: boolean) => {
+    return scheduleService.toggleTask(String(taskId), Boolean(enabled))
+  })
+  ipcMain.handle('schedules:delete', (_e, taskId: string) => {
+    return scheduleService.deleteTask(String(taskId))
+  })
+  ipcMain.handle('schedules:runNow', (_e, taskId: string) => {
+    return scheduleService.runTaskNow(String(taskId))
+  })
+  ipcMain.handle('schedules:primeHeartbeat', () => scheduleService.getPrimeHeartbeatStatus())
 
   // 独立浏览器窗口的 browserWin:* 路由由 BrowserWindowService.register() 自行注册。
   void browserWindow

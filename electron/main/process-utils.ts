@@ -660,6 +660,53 @@ export function resolveGitExecutable(env: NodeJS.ProcessEnv = process.env): stri
   return 'git.exe'
 }
 
+/** Locate GitHub CLI (`gh`) without invoking a shell. Returns null if not installed. */
+export function resolveGhExecutable(env: NodeJS.ProcessEnv = process.env): string | null {
+  const names = process.platform === 'win32' ? ['gh.exe', 'gh.cmd'] : ['gh']
+  const pathEntries = (process.platform === 'win32' ? [env.Path, env.PATH] : [env.PATH])
+    .flatMap((raw) => (raw ?? '').split(process.platform === 'win32' ? ';' : ':'))
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter((dir) => isAbsoluteForPlatform(dir, process.platform))
+  const extraDirs =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\GitHub CLI',
+          'C:\\Program Files (x86)\\GitHub CLI',
+          ...(env.LOCALAPPDATA ? [win32.join(env.LOCALAPPDATA, 'Programs', 'GitHub CLI')] : []),
+        ]
+      : ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin']
+
+  const pathApi = process.platform === 'win32' ? win32 : posix
+  for (const dir of [...pathEntries, ...extraDirs]) {
+    for (const name of names) {
+      const candidate = pathApi.join(dir, name)
+      try {
+        if (statSync(candidate).isFile()) return realpathSync(candidate)
+      } catch {
+        // continue
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Environment for Git network / PR commands (`git push`, `gh`) that need the
+ * user's stored credentials/SSH config while remaining strictly non-interactive.
+ */
+export function gitNetworkEnvironment(): NodeJS.ProcessEnv {
+  return safeChildEnvironment({
+    LANG: 'C.UTF-8',
+    LC_ALL: 'C.UTF-8',
+    NO_COLOR: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    GH_PROMPT_DISABLED: '1',
+    PAGER: 'cat',
+    GIT_PAGER: 'cat',
+  })
+}
+
 export function restrictedGitEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     LANG: 'C.UTF-8',

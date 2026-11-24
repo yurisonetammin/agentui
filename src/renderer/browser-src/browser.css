@@ -119,26 +119,25 @@
   border-color: var(--accent);
 }
 
-.browser-share {
-  position: relative;
+.browser-nav .btn-small.is-picking {
+  border-color: var(--accent);
+  background: rgba(37, 99, 235, 0.16);
+  color: var(--accent);
 }
 
-.browser-share-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  width: 340px;
-  max-height: 420px;
-  overflow-y: auto;
-  padding: 10px;
-  z-index: 30;
+.browser-share-drawer {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
 }
 
 .browser-share-modes {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 
@@ -149,9 +148,11 @@
 }
 
 .browser-share-threads {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
 }
 
 .browser-share-threads > button {
@@ -161,13 +162,15 @@
   gap: 1px;
   padding: 6px 8px;
   border-radius: var(--radius-small);
-  background: transparent;
+  background: var(--bg-root);
+  border: 1px solid var(--border);
   color: var(--text-primary);
   text-align: left;
 }
 
 .browser-share-threads > button:hover:not(:disabled) {
   background: var(--bg-hover);
+  border-color: var(--accent);
 }
 
 .browser-share-threads small {
@@ -181,16 +184,131 @@
   font-size: 12px;
 }
 
-.browser-share-done {
+.browser-annotation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--accent);
+  background: var(--bg-elevated);
+}
+
+.browser-annotation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.browser-annotation-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.browser-annotation-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.14);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.browser-annotation-selector {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-annotation-dims {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.browser-annotation-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.browser-annotation-body {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.browser-annotation-thumb {
+  width: 144px;
+  max-height: 110px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-root);
+  flex-shrink: 0;
+}
+
+.browser-annotation-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.browser-annotation-excerpt {
   margin: 0;
-  color: var(--success);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-annotation-note {
+  resize: vertical;
+  min-height: 48px;
+  font-size: 12.5px;
+}
+
+.browser-annotation-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.browser-annotation-thread {
+  max-width: 260px;
+  height: 28px;
   font-size: 12px;
 }
 
 .browser-status {
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-radius: var(--radius-small);
   font-size: 12px;
+}
+
+.browser-status.is-info {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--accent);
+}
+
+.browser-status.is-success {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
 }
 
 .browser-status.is-error {

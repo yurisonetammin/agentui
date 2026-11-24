@@ -2,16 +2,59 @@ import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import {
+  buildComparePrUrl,
+  type GitPrCreateInput,
+  type GitPrCreateResult,
+  type GitPushResult,
+  type LinkedPullRequest,
+} from '@shared/git-pr'
 import type { GitFileChange, GitStatusSummary, GitTurnChanges, GitWorktreeInfo } from '@shared/types'
-import { isPathInside, resolveGitExecutable, restrictedGitEnvironment, runProcess } from '../process-utils'
+import {
+  gitNetworkEnvironment,
+  isPathInside,
+  resolveGhExecutable,
+  resolveGitExecutable,
+  restrictedGitEnvironment,
+  runProcess,
+} from '../process-utils'
 
 export interface GitTurnCapture {
   finish: () => Promise<{ changes: GitTurnChanges; diff: string | null }>
   discard: () => Promise<void>
 }
 
+const LINKED_PR_CACHE_TTL_MS = 45_000
+
 export class GitService {
   private readonly gitExe = resolveGitExecutable()
+  private ghExeCache: { checkedAt: number; path: string | null } | null = null
+  private readonly linkedPrCache = new Map<string, { checkedAt: number; pr: LinkedPullRequest | null }>()
+
+  private resolveGh(refresh = false): string | null {
+    if (!refresh && this.ghExeCache && Date.now() - this.ghExeCache.checkedAt < 60_000) {
+      return this.ghExeCache.path
+    }
+    const found = resolveGhExecutable()
+    this.ghExeCache = { checkedAt: Date.now(), path: found }
+    return found
+  }
+
+  private async resolvePrimaryRemote(cwd: string): Promise<{ name: string; url: string } | null> {
+    const originUrl = await this.execGit(cwd, ['remote', 'get-url', 'origin'], 3_000)
+      .then((s) => s.trim())
+      .catch(() => '')
+    if (originUrl) return { name: 'origin', url: originUrl }
+    const remotes = await this.execGit(cwd, ['remote'], 3_000)
+      .then((s) => s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean))
+      .catch(() => [])
+    if (remotes.length === 0) return null
+    const first = remotes[0]
+    const url = await this.execGit(cwd, ['remote', 'get-url', first], 3_000)
+      .then((s) => s.trim())
+      .catch(() => '')
+    return url ? { name: first, url } : null
+  }
 
   private async execGit(cwd: string, args: string[], timeoutMs = 15_000, env = restrictedGitEnvironment()): Promise<string> {
     const res = await runProcess(this.gitExe, args, {
@@ -92,8 +135,11 @@ export class GitService {
     try {
       const repoRoot = (await this.execGit(cwd, ['rev-parse', '--show-toplevel'])).trim()
       const statusOut = await this.execGit(cwd, ['status', '--porcelain=v1', '-b', '-z', '-uall'])
-      const { branch, ahead, behind, changes } = parsePorcelainStatusZ(statusOut)
-      const worktreeOut = await this.execGit(cwd, ['worktree', 'list', '--porcelain']).catch(() => '')
+      const { branch, ahead, behind, hasUpstream, changes } = parsePorcelainStatusZ(statusOut)
+      const [worktreeOut, primaryRemote] = await Promise.all([
+        this.execGit(cwd, ['worktree', 'list', '--porcelain']).catch(() => ''),
+        this.resolvePrimaryRemote(cwd),
+      ])
       const worktrees = parseWorktreeList(worktreeOut, repoRoot)
       return {
         isRepo: true,
@@ -101,6 +147,9 @@ export class GitService {
         branch,
         ahead,
         behind,
+        hasUpstream,
+        remoteUrl: primaryRemote?.url ?? null,
+        ghAvailable: Boolean(this.resolveGh()),
         changes,
         worktrees,
       }
@@ -162,7 +211,180 @@ export class GitService {
   async commit(cwd: string, message: string): Promise<void> {
     const trimmed = message.trim()
     if (!trimmed) throw new Error('提交信息不能为空')
-    await this.execGit(cwd, ['commit', '-m', trimmed])
+    await this.execGit(cwd, ['commit', '-m', trimmed], 20_000, gitNetworkEnvironment())
+  }
+
+  /** Collect staged file list and bounded diff patch for AI / heuristic commit message generation. */
+  async getStagedDiffForCommit(cwd: string): Promise<{
+    files: Array<{ status: string; path: string }>
+    patch: string
+  }> {
+    const [nameStatus, rawPatch] = await Promise.all([
+      this.execGit(cwd, ['diff', '--cached', '--name-status']),
+      this.execGit(cwd, ['diff', '--cached', '--no-color']),
+    ])
+    const files = nameStatus
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split('\t')
+        const status = parts[0] ?? 'M'
+        const path = parts[parts.length - 1] ?? ''
+        return { status, path }
+      })
+      .filter((f) => f.path)
+    return {
+      files,
+      patch: rawPatch.slice(0, 12_000),
+    }
+  }
+
+  async push(cwd: string): Promise<GitPushResult> {
+    const status = await this.getStatus(cwd)
+    if (!status.isRepo || !status.branch || status.branch.startsWith('HEAD')) {
+      throw new Error('当前处于游离 HEAD 或非 Git 仓库，无法推送')
+    }
+    const remote = await this.resolvePrimaryRemote(cwd)
+    if (!remote) {
+      throw new Error('未配置 Git 远程仓库 (remote)，请先添加 origin')
+    }
+    const setUpstream = !status.hasUpstream
+    const args = setUpstream ? ['push', '--set-upstream', remote.name, status.branch] : ['push']
+    await this.execGit(cwd, args, 60_000, gitNetworkEnvironment())
+    if (status.repoRoot) {
+      this.linkedPrCache.delete(`${status.repoRoot}::${status.branch}`)
+    }
+    return { branch: status.branch, remote: remote.name, setUpstream }
+  }
+
+  async getLinkedPr(cwd: string, refresh = false): Promise<LinkedPullRequest | null> {
+    const gh = this.resolveGh(refresh)
+    if (!gh) return null
+    const status = await this.getStatus(cwd)
+    if (!status.isRepo || !status.repoRoot || !status.branch || status.branch.startsWith('HEAD')) {
+      return null
+    }
+    const cacheKey = `${status.repoRoot}::${status.branch}`
+    const cached = this.linkedPrCache.get(cacheKey)
+    if (!refresh && cached && Date.now() - cached.checkedAt < LINKED_PR_CACHE_TTL_MS) {
+      return cached.pr
+    }
+    const res = await runProcess(
+      gh,
+      ['pr', 'view', '--json', 'number,title,url,state,isDraft'],
+      {
+        cwd,
+        env: gitNetworkEnvironment(),
+        timeoutMs: 10_000,
+        maxBytes: 1024 * 1024,
+        resolveHarnessShim: false,
+      },
+    ).catch(() => null)
+    let pr: LinkedPullRequest | null = null
+    if (res && !res.timedOut && res.code === 0 && res.stdout.trim()) {
+      try {
+        const parsed = JSON.parse(res.stdout) as {
+          number?: number
+          title?: string
+          url?: string
+          state?: string
+          isDraft?: boolean
+        }
+        if (typeof parsed.number === 'number' && typeof parsed.url === 'string') {
+          const rawState = String(parsed.state ?? 'OPEN').toUpperCase()
+          const state: LinkedPullRequest['state'] = parsed.isDraft
+            ? 'DRAFT'
+            : rawState === 'MERGED' || rawState === 'CLOSED'
+              ? rawState
+              : 'OPEN'
+          pr = {
+            number: parsed.number,
+            title: typeof parsed.title === 'string' ? parsed.title : `PR #${parsed.number}`,
+            url: parsed.url,
+            state,
+          }
+        }
+      } catch {
+        pr = null
+      }
+    }
+    this.linkedPrCache.set(cacheKey, { checkedAt: Date.now(), pr })
+    return pr
+  }
+
+  async createPr(input: GitPrCreateInput): Promise<GitPrCreateResult> {
+    const status = await this.getStatus(input.cwd)
+    if (!status.isRepo || !status.branch || status.branch.startsWith('HEAD')) {
+      throw new Error('当前处于游离 HEAD 或非 Git 仓库，无法创建 PR')
+    }
+    if (!status.remoteUrl) {
+      throw new Error('未配置 Git 远程仓库，无法创建 PR')
+    }
+
+    // Ensure remote branch is up to date before creating PR
+    if (!status.hasUpstream || status.ahead > 0) {
+      await this.push(input.cwd)
+    }
+
+    const latestSubject = await this.execGit(input.cwd, ['log', '-1', '--pretty=%s'], 5_000)
+      .then((s) => s.trim())
+      .catch(() => '')
+    const recentLog = await this.execGit(input.cwd, ['log', '-5', '--pretty=- %s'], 5_000)
+      .then((s) => s.trim())
+      .catch(() => '')
+
+    const title = input.title?.trim() || latestSubject || status.branch
+    const body = input.body?.trim() || recentLog || ''
+    const baseBranch = input.baseBranch?.trim() || undefined
+
+    const gh = this.resolveGh()
+    if (gh) {
+      const args = ['pr', 'create', '--title', title, '--body', body, '--head', status.branch]
+      if (baseBranch) args.push('--base', baseBranch)
+      if (input.draft) args.push('--draft')
+
+      const res = await runProcess(gh, args, {
+        cwd: input.cwd,
+        env: gitNetworkEnvironment(),
+        timeoutMs: 30_000,
+        maxBytes: 1024 * 1024,
+        resolveHarnessShim: false,
+      })
+      if (!res.timedOut && res.code === 0) {
+        const urlMatch = `${res.stdout}\n${res.stderr}`.match(/https?:\/\/\S+/)
+        const url = urlMatch?.[0] ?? ''
+        const numMatch = url.match(/\/pull\/(\d+)/)
+        if (status.repoRoot) {
+          this.linkedPrCache.delete(`${status.repoRoot}::${status.branch}`)
+        }
+        return {
+          mode: 'gh',
+          url,
+          number: numMatch ? Number(numMatch[1]) : undefined,
+        }
+      }
+      // If gh failed (e.g. unauthenticated or non-GitHub remote like GitLab), fall back to Compare URL when possible
+      const fallbackUrl = buildComparePrUrl(status.remoteUrl, status.branch, { baseBranch, title, body })
+      if (fallbackUrl) {
+        return {
+          mode: 'compare-url',
+          url: fallbackUrl,
+          note: `gh 创建 PR 未成功（${(res.stderr || res.stdout).trim().slice(0, 120) || '未登录或非 GitHub 仓库'}），已改为打开浏览器对比页面`,
+        }
+      }
+      throw new Error(res.stderr.trim() || res.stdout.trim() || `gh pr create 失败 (${res.code})`)
+    }
+
+    const compareUrl = buildComparePrUrl(status.remoteUrl, status.branch, { baseBranch, title, body })
+    if (!compareUrl) {
+      throw new Error('未检测到 gh CLI，且无法从当前远程地址生成 GitHub/GitLab 对比链接')
+    }
+    return {
+      mode: 'compare-url',
+      url: compareUrl,
+      note: '本机未安装 gh CLI，已在浏览器打开创建 PR 页面',
+    }
   }
 
   async createWorktree(repoPath: string, branchName: string, baseRef?: string): Promise<GitWorktreeInfo> {
@@ -236,12 +458,14 @@ export function parsePorcelainStatusZ(output: string): {
   branch: string | null
   ahead: number
   behind: number
+  hasUpstream: boolean
   changes: GitFileChange[]
 } {
   const tokens = output.split('\0').filter((t) => t.length > 0)
   let branch: string | null = null
   let ahead = 0
   let behind = 0
+  let hasUpstream = false
   const changes: GitFileChange[] = []
 
   for (let i = 0; i < tokens.length; i += 1) {
@@ -257,6 +481,7 @@ export function parsePorcelainStatusZ(output: string): {
         branch = branchPart
       }
       if (trackingPart) {
+        hasUpstream = true
         const aheadMatch = trackingPart.match(/ahead (\d+)/)
         const behindMatch = trackingPart.match(/behind (\d+)/)
         if (aheadMatch) ahead = Number(aheadMatch[1])
@@ -282,7 +507,7 @@ export function parsePorcelainStatusZ(output: string): {
       changes.push({ path, oldPath, indexStatus: x, worktreeStatus: y, untracked, staged: false })
     }
   }
-  return { branch, ahead, behind, changes }
+  return { branch, ahead, behind, hasUpstream, changes }
 }
 
 export function parseWorktreeList(output: string, repoRoot: string): GitWorktreeInfo[] {

@@ -12,10 +12,175 @@ import {
   type WebContentsView as WebContentsViewType,
 } from 'electron'
 import type { BrowserWinTabInfo, ShareToThreadInput } from '@shared/types'
+import {
+  formatBrowserAnnotationForComposer,
+  type BrowserAnnotationShareInput,
+  type BrowserPickedElement,
+} from '@shared/browser-annotation'
 
 const BROWSER_PARTITION = 'persist:agentui-browser'
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const DEFAULT_URL = 'about:blank'
+
+const DOM_PICKER_SCRIPT = `(() => {
+  if (typeof window.__agentuiCancelPicker === 'function') {
+    try { window.__agentuiCancelPicker(); } catch {}
+  }
+  return new Promise((resolve) => {
+    const esc = (s) => {
+      if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
+      return String(s).replace(/([^\\w-])/g, '\\\\$1');
+    };
+    const buildSelector = (el) => {
+      if (!el || el.nodeType !== 1) return '';
+      if (el.id) {
+        const byId = '#' + esc(el.id);
+        try {
+          if (document.querySelectorAll(byId).length === 1) return byId;
+        } catch {}
+      }
+      const parts = [];
+      let cur = el;
+      let depth = 0;
+      while (cur && cur.nodeType === 1 && depth < 5) {
+        let seg = cur.tagName.toLowerCase();
+        if (cur.id) {
+          parts.unshift('#' + esc(cur.id));
+          break;
+        }
+        const cls = Array.from(cur.classList || []).filter((c) => c && !c.startsWith('__agentui')).slice(0, 2);
+        if (cls.length) seg += '.' + cls.map(esc).join('.');
+        const parent = cur.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter((ch) => ch.tagName === cur.tagName);
+          if (siblings.length > 1) {
+            seg += ':nth-of-type(' + (siblings.indexOf(cur) + 1) + ')';
+          }
+        }
+        parts.unshift(seg);
+        const joined = parts.join(' > ');
+        try {
+          if (document.querySelectorAll(joined).length === 1) return joined;
+        } catch {}
+        cur = parent;
+        depth += 1;
+      }
+      return parts.join(' > ') || el.tagName.toLowerCase();
+    };
+
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-agentui-picker', '1');
+    overlay.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #2563eb;background:rgba(37,99,235,0.14);border-radius:3px;box-sizing:border-box;display:none;transition:all 40ms ease;';
+
+    const tip = document.createElement('div');
+    tip.setAttribute('data-agentui-picker', '1');
+    tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;background:#111827;color:#f9fafb;font:12px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;padding:4px 8px;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.35);max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;';
+
+    const prevCursor = document.documentElement.style.cursor;
+    document.documentElement.style.cursor = 'crosshair';
+    (document.body || document.documentElement).appendChild(overlay);
+    (document.body || document.documentElement).appendChild(tip);
+
+    let lastTarget = null;
+    let settled = false;
+
+    const cleanup = () => {
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('mousedown', onBlock, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.documentElement.style.cursor = prevCursor;
+      overlay.remove();
+      tip.remove();
+      delete window.__agentuiCancelPicker;
+    };
+
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(val);
+    };
+
+    const updateHighlight = (el) => {
+      if (!el || el.nodeType !== 1 || el.hasAttribute('data-agentui-picker')) return;
+      lastTarget = el;
+      const r = el.getBoundingClientRect();
+      overlay.style.display = 'block';
+      overlay.style.left = r.left + 'px';
+      overlay.style.top = r.top + 'px';
+      overlay.style.width = Math.max(2, r.width) + 'px';
+      overlay.style.height = Math.max(2, r.height) + 'px';
+
+      const tag = el.tagName.toLowerCase();
+      const idPart = el.id ? '#' + el.id : '';
+      const clsPart = Array.from(el.classList || []).slice(0, 2).map((c) => '.' + c).join('');
+      tip.textContent = tag + idPart + clsPart + '  ' + Math.round(r.width) + '×' + Math.round(r.height) + ' · 点击批注 / Esc 取消';
+      tip.style.display = 'block';
+      const tipTop = r.top > 34 ? r.top - 28 : Math.min(window.innerHeight - 30, r.bottom + 6);
+      const tipLeft = Math.max(8, Math.min(window.innerWidth - 368, r.left));
+      tip.style.top = tipTop + 'px';
+      tip.style.left = tipLeft + 'px';
+    };
+
+    const onMove = (ev) => {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      updateHighlight(el);
+    };
+
+    const onBlock = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+    };
+
+    const onClick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      const target = document.elementFromPoint(ev.clientX, ev.clientY) || lastTarget;
+      if (!target || target.nodeType !== 1) {
+        finish(null);
+        return;
+      }
+      const r = target.getBoundingClientRect();
+      const rawText = (target.innerText || target.textContent || target.getAttribute('aria-label') || target.getAttribute('alt') || target.getAttribute('placeholder') || '').replace(/\\s+/g, ' ').trim();
+      const payload = {
+        selector: buildSelector(target),
+        tag: target.tagName.toLowerCase(),
+        id: target.id || undefined,
+        classes: Array.from(target.classList || []).slice(0, 8),
+        role: target.getAttribute('role') || undefined,
+        text: rawText.slice(0, 300),
+        rect: {
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+        },
+        url: location.href,
+        title: document.title || '',
+      };
+      finish(payload);
+    };
+
+    const onKeyDown = (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(null);
+      }
+    };
+
+    window.__agentuiCancelPicker = () => finish(null);
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('mousedown', onBlock, true);
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKeyDown, true);
+  });
+})()`
 
 interface BrowserTab {
   id: string
@@ -247,6 +412,9 @@ export class BrowserWindowService {
 
   activateTab(tabId: string): BrowserWinTabInfo[] {
     this.requireWindow()
+    if (this.activeTabId && this.activeTabId !== tabId) {
+      void this.cancelElementPick()
+    }
     const tab = this.tabs.find((t) => t.id === tabId)
     if (!tab) throw new Error('标签不存在')
     this.activeTabId = tabId
@@ -291,7 +459,7 @@ export class BrowserWindowService {
   }
 
   setInsets(top: number): void {
-    const value = Math.max(0, Math.min(400, Math.round(top)))
+    const value = Math.max(0, Math.min(560, Math.round(top)))
     if (value === this.insetTop) return
     this.insetTop = value
     this.layout()
@@ -319,6 +487,76 @@ export class BrowserWindowService {
       }
     }, 80)
     this.pushTimer.unref?.()
+  }
+
+  async cancelElementPick(): Promise<void> {
+    const tab = this.activeTab()
+    if (!tab || tab.view.webContents.isDestroyed()) return
+    await tab.view.webContents
+      .executeJavaScript('typeof window.__agentuiCancelPicker === "function" && window.__agentuiCancelPicker()', true)
+      .catch(() => undefined)
+  }
+
+  async startElementPick(): Promise<BrowserPickedElement | null> {
+    this.requireWindow()
+    const tab = this.activeTab()
+    if (!tab || tab.view.webContents.isDestroyed()) throw new Error('没有可点选的标签页')
+    const url = tab.view.webContents.getURL()
+    if (!url || url === DEFAULT_URL) {
+      throw new Error('请先打开一个网页，再点击「点选批注」')
+    }
+    tab.view.webContents.focus()
+    const raw = (await tab.view.webContents
+      .executeJavaScript(DOM_PICKER_SCRIPT, true)
+      .catch(() => null)) as BrowserPickedElement | null
+    if (!raw || typeof raw.selector !== 'string') return null
+
+    // 等一帧确保高亮浮层已从画面移除后再裁切截图
+    await new Promise((r) => setTimeout(r, 45))
+    if (tab.view.webContents.isDestroyed()) return raw
+
+    try {
+      const bounds = tab.view.getBounds()
+      const pad = 16
+      const viewW = Math.max(1, bounds.width)
+      const viewH = Math.max(1, bounds.height)
+      const rx = Math.max(0, Math.floor(raw.rect.x - pad))
+      const ry = Math.max(0, Math.floor(raw.rect.y - pad))
+      const rw = Math.min(viewW - rx, Math.ceil(raw.rect.width + pad * 2))
+      const rh = Math.min(viewH - ry, Math.ceil(raw.rect.height + pad * 2))
+      const image =
+        rw >= 8 && rh >= 8
+          ? await tab.view.webContents.capturePage({ x: rx, y: ry, width: rw, height: rh })
+          : await tab.view.webContents.capturePage()
+      const png = image.toPNG()
+      if (png.byteLength > 0 && png.byteLength <= MAX_IMAGE_BYTES) {
+        raw.imageData = png.toString('base64')
+        raw.mimeType = 'image/png'
+      }
+    } catch {
+      // 截图失败不阻断 DOM 信息回传
+    }
+    return raw
+  }
+
+  async shareAnnotation(input: BrowserAnnotationShareInput): Promise<void> {
+    if (!this.deps.threadExists(input.threadId)) throw new Error('目标会话不存在')
+    const target = this.deps.getMainWindow()
+    if (!target || target.isDestroyed()) throw new Error('工作台窗口未打开，无法分享')
+    if (input.element.imageData) {
+      const approxBytes = Math.floor(input.element.imageData.length * 0.75)
+      if (approxBytes > MAX_IMAGE_BYTES) throw new Error('截图超过 10MB 限制')
+    }
+    const text = formatBrowserAnnotationForComposer(input.element, input.note ?? '')
+    target.webContents.send('agentui:shareToComposer', {
+      threadId: input.threadId,
+      kind: 'annotation',
+      text,
+      fromUrl: input.element.url,
+      title: input.element.title,
+      imageData: input.element.imageData,
+      mimeType: input.element.mimeType ?? (input.element.imageData ? 'image/png' : undefined),
+    })
   }
 
   // ── 分享到会话 ─────────────────────────────────────────────────────────
@@ -386,6 +624,19 @@ export class BrowserWindowService {
         throw new Error('无效的分享请求')
       }
       await this.share(target)
+    })
+    ipcMain.handle('browserWin:startPick', () => this.startElementPick())
+    ipcMain.handle('browserWin:cancelPick', () => this.cancelElementPick())
+    ipcMain.handle('browserWin:shareAnnotation', async (_e, input: BrowserAnnotationShareInput) => {
+      if (
+        !input ||
+        typeof input.threadId !== 'string' ||
+        !input.element ||
+        typeof input.element.selector !== 'string'
+      ) {
+        throw new Error('无效的元素批注请求')
+      }
+      await this.shareAnnotation(input)
     })
 
     app.on('before-quit', () => {

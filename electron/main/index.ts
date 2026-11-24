@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, nativeImage, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, Menu, nativeImage, nativeTheme, Notification, shell, Tray } from 'electron'
 import { HarnessDiscoveryService } from './discovery'
 import { BrowserCompanionService } from './browser-companion'
 import { BrowserWindowService } from './browser-window-service'
@@ -13,6 +13,7 @@ import { GitService } from './git/git-service'
 import { registerIpcHandlers } from './ipc'
 import { ModelCatalogService } from './model-catalog'
 import { RuntimeManager } from './rpc/manager'
+import { ScheduleService } from './schedule-service'
 import { SessionSearchService } from './sessions/search-index'
 import { StateStore } from './store'
 import { TerminalService } from './terminal-service'
@@ -21,6 +22,7 @@ import { WorkspaceBrowserService } from './workspace-browser'
 import { WorkspaceFileService } from './workspace-files'
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
 let isQuitting = false
 
 if (process.platform === 'win32') {
@@ -121,6 +123,91 @@ const sessionSearch = new SessionSearchService({
   getCachedTimeline: (threadId) => runtimeManager.getCachedTimeline(threadId),
 })
 
+const scheduleService = new ScheduleService({
+  store,
+  discovery,
+  runTask: (input) => runtimeManager.runScheduledPrompt(input),
+  onUpdate: (snapshot) => {
+    sendToWindow('agentui:scheduleUpdated', snapshot)
+    refreshTrayMenu()
+  },
+  onFailureNotify: (task, error) => {
+    if (!Notification.isSupported()) return
+    try {
+      new Notification({
+        title: `AgentUI 定时任务失败：${task.name}`,
+        body: error.slice(0, 180),
+      }).show()
+    } catch {
+      /* ignore notification failures */
+    }
+  },
+})
+
+function resolveTrayIcon(): Electron.NativeImage {
+  const icon = resolveAppIcon()
+  if (typeof icon === 'string') {
+    const img = nativeImage.createFromPath(icon)
+    if (!img.isEmpty()) return img.resize({ width: 16, height: 16 })
+  } else if (icon && !icon.isEmpty()) {
+    return icon.resize({ width: 16, height: 16 })
+  }
+  return nativeImage.createEmpty()
+}
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function refreshTrayMenu(): void {
+  if (!tray || tray.isDestroyed()) return
+  const enabledCount = scheduleService.snapshot().tasks.filter((t) => t.enabled).length
+  tray.setToolTip(
+    enabledCount > 0
+      ? `AgentUI — ${enabledCount} 个定时任务运行中`
+      : 'AgentUI — 多引擎编码 Agent 工作台',
+  )
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '显示 AgentUI', click: () => showMainWindow() },
+      { label: `启用中的定时任务：${enabledCount} 个`, enabled: false },
+      { type: 'separator' },
+      {
+        label: '退出 AgentUI',
+        click: () => {
+          app.quit()
+        },
+      },
+    ]),
+  )
+}
+
+function syncTray(): void {
+  const wantTray = store.snapshot().appearance.closeToTray
+  if (!wantTray) {
+    if (tray && !tray.isDestroyed()) tray.destroy()
+    tray = null
+    return
+  }
+  if (!tray || tray.isDestroyed()) {
+    try {
+      tray = new Tray(resolveTrayIcon())
+      tray.on('double-click', () => showMainWindow())
+      tray.on('click', () => showMainWindow())
+    } catch {
+      tray = null
+      return
+    }
+  }
+  refreshTrayMenu()
+}
+
 function createMainWindow(): void {
   const rendererFilePath = join(__dirname, '../renderer/index.html')
   const rendererFileUrl = pathToFileURL(rendererFilePath).href
@@ -190,6 +277,14 @@ function createMainWindow(): void {
     void mainWindow.loadFile(rendererFilePath)
   }
 
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && store.snapshot().appearance.closeToTray) {
+      event.preventDefault()
+      syncTray()
+      mainWindow?.hide()
+    }
+  })
+
   mainWindow.on('closed', () => {
     nativeTheme.removeListener('updated', onThemeUpdate)
     mainWindow = null
@@ -216,8 +311,12 @@ void app.whenReady().then(async () => {
     herdr,
     runtimeManager,
     sessionSearch,
+    scheduleService,
+    onAppearanceChanged: () => syncTray(),
   })
   browserWindowService.register()
+  scheduleService.start()
+  syncTray()
   await discovery.refresh(store.snapshot().customBinaryPaths).catch(() => undefined)
   createMainWindow()
 
@@ -227,6 +326,7 @@ void app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  if (store.snapshot().appearance.closeToTray && !isQuitting) return
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -234,6 +334,11 @@ app.on('before-quit', (event) => {
   if (isQuitting) return
   event.preventDefault()
   isQuitting = true
+  scheduleService.dispose()
+  if (tray && !tray.isDestroyed()) {
+    tray.destroy()
+    tray = null
+  }
   sessionSearch.flushToDisk()
   void Promise.allSettled([runtimeManager.stopAll(), terminal.stopAll(), herdr.stopStreams()]).finally(() => {
     app.exit(0)

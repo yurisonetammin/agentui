@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, CircleAlert, ClipboardCopy, ExternalLink, FolderGit2, RefreshCw } from 'lucide-react'
+import { Check, CircleAlert, ClipboardCopy, ExternalLink, FolderGit2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { diagnosticHarnessState, formatDiagnosticsReport, type AppDiagnostics } from '@shared/diagnostics'
 import type { ConversationSettings } from '@shared/settings'
 import { shortcutHints } from '@shared/shortcuts'
-import { TRUST_PRESETS, TRUST_PRESET_DESCRIPTIONS, TRUST_PRESET_LABELS, type TrustPreset } from '@shared/tool-policy'
+import {
+  PERMISSION_RULE_ACTION_LABELS,
+  PERMISSION_RULE_TARGET_LABELS,
+  TRUST_PRESETS,
+  TRUST_PRESET_DESCRIPTIONS,
+  TRUST_PRESET_LABELS,
+  type PermissionRuleAction,
+  type PermissionRuleTarget,
+  type ToolPermissionRule,
+  type TrustPreset,
+} from '@shared/tool-policy'
 import { HARNESS_IDS, HARNESS_LABELS, type ProjectEntry } from '@shared/types'
 import { errorText, Segments, SettingsRow } from './SettingsControls'
 
@@ -69,15 +79,36 @@ function TrustSelect({ value, label, disabled, onChange }: {
   </select>
 }
 
-export function ProjectPermissionsPage({ projects, activeProjectId, defaultPreset, onSaveDefault, onSaveProject }: {
+const RULE_PLACEHOLDERS: Record<PermissionRuleTarget, string> = {
+  command: '命令前缀或通配，例如 npm test* / cargo check*',
+  tool: '工具名或通配，例如 Bash / Edit / mcp__*',
+  path: '路径前缀或文件名，例如 src/** / .env*',
+}
+
+export function ProjectPermissionsPage({ projects, activeProjectId, defaultPreset, onSaveDefault, onSaveProject, onSaveProjectRules }: {
   projects: ProjectEntry[]
   activeProjectId: string | null
   defaultPreset: TrustPreset
   onSaveDefault: (preset: TrustPreset) => Promise<void>
   onSaveProject: (id: string, preset: TrustPreset) => Promise<void>
+  onSaveProjectRules: (id: string, rules: ToolPermissionRule[]) => Promise<void>
 }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [ruleProjectId, setRuleProjectId] = useState<string>(() => activeProjectId ?? projects[0]?.id ?? '')
+  const [ruleAction, setRuleAction] = useState<PermissionRuleAction>('allow')
+  const [ruleTarget, setRuleTarget] = useState<PermissionRuleTarget>('command')
+  const [rulePattern, setRulePattern] = useState('')
+  const [ruleNote, setRuleNote] = useState('')
+
+  useEffect(() => {
+    if (!projects.some((p) => p.id === ruleProjectId)) {
+      setRuleProjectId(activeProjectId ?? projects[0]?.id ?? '')
+    }
+  }, [projects, activeProjectId, ruleProjectId])
+
+  const selectedRuleProject = projects.find((p) => p.id === ruleProjectId) ?? projects[0] ?? null
+  const currentRules = selectedRuleProject?.permissionRules ?? []
 
   async function save(action: () => Promise<void>) {
     setSaving(true)
@@ -85,9 +116,41 @@ export function ProjectPermissionsPage({ projects, activeProjectId, defaultPrese
     try { await action() } catch (err) { setError(errorText(err)) } finally { setSaving(false) }
   }
 
+  async function handleAddRule() {
+    if (!selectedRuleProject) return
+    const trimmed = rulePattern.trim()
+    if (!trimmed) {
+      setError('请输入匹配模式（例如 npm test*）')
+      return
+    }
+    const nextRule: ToolPermissionRule = {
+      id: `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      action: ruleAction,
+      target: ruleTarget,
+      pattern: trimmed,
+      note: ruleNote.trim() || undefined,
+      createdAt: Date.now(),
+    }
+    await save(async () => {
+      await onSaveProjectRules(selectedRuleProject.id, [...currentRules, nextRule])
+      setRulePattern('')
+      setRuleNote('')
+    })
+  }
+
+  async function handleDeleteRule(ruleId: string) {
+    if (!selectedRuleProject) return
+    await save(() =>
+      onSaveProjectRules(
+        selectedRuleProject.id,
+        currentRules.filter((r) => r.id !== ruleId),
+      ),
+    )
+  }
+
   return (
     <>
-      <div className="settings-page-heading"><h1>项目与权限</h1><p>为每个项目配置工具审批方式。</p></div>
+      <div className="settings-page-heading"><h1>项目与权限</h1><p>为每个项目配置工具审批预设与细粒度 Allow / Ask / Deny 规则。</p></div>
       {error && <p className="settings-feedback is-error" role="alert"><CircleAlert size={14} />{error}</p>}
       <section className="settings-card settings-appearance">
         <SettingsRow id="projects-default" label="新项目默认预设" description="仅用于此后首次添加的项目。">
@@ -110,6 +173,114 @@ export function ProjectPermissionsPage({ projects, activeProjectId, defaultPrese
           </div>
         ))}
       </section>
+      <section id="projects-rules" tabIndex={-1} className="settings-card settings-section settings-page-block">
+        <div className="settings-section-heading">
+          <div>
+            <h2>细粒度权限规则（Allow / Ask / Deny）</h2>
+            <p className="settings-caption">优先级：高风险规则兜底 &gt; 拒绝 (Deny) &gt; 询问 (Ask) &gt; 允许 (Allow) &gt; 项目预设。命令类「允许」规则会自动拦截管道/链式拼接命令。</p>
+          </div>
+          {projects.length > 0 && selectedRuleProject && (
+            <select
+              className="text-input settings-trust-select"
+              aria-label="选择配置规则的项目"
+              value={selectedRuleProject.id}
+              onChange={(e) => setRuleProjectId(e.target.value)}
+            >
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
+        </div>
+        {!selectedRuleProject ? (
+          <p className="settings-caption">请先添加项目后再配置细粒度规则。</p>
+        ) : (
+          <>
+            <div className="perm-rule-form">
+              <select
+                className="text-input perm-rule-select"
+                aria-label="规则动作"
+                value={ruleAction}
+                disabled={saving}
+                onChange={(e) => setRuleAction(e.target.value as PermissionRuleAction)}
+              >
+                <option value="allow">允许 (Allow)</option>
+                <option value="ask">询问 (Ask)</option>
+                <option value="deny">拒绝 (Deny)</option>
+              </select>
+              <select
+                className="text-input perm-rule-select"
+                aria-label="匹配目标"
+                value={ruleTarget}
+                disabled={saving}
+                onChange={(e) => setRuleTarget(e.target.value as PermissionRuleTarget)}
+              >
+                <option value="command">命令 (Command)</option>
+                <option value="tool">工具 (Tool)</option>
+                <option value="path">路径 (Path)</option>
+              </select>
+              <input
+                type="text"
+                className="text-input perm-rule-pattern"
+                aria-label="规则匹配模式"
+                placeholder={RULE_PLACEHOLDERS[ruleTarget]}
+                value={rulePattern}
+                disabled={saving}
+                onChange={(e) => setRulePattern(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void handleAddRule()
+                  }
+                }}
+              />
+              <input
+                type="text"
+                className="text-input perm-rule-note"
+                aria-label="备注（可选）"
+                placeholder="备注（可选）"
+                value={ruleNote}
+                disabled={saving}
+                onChange={(e) => setRuleNote(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving || !rulePattern.trim()}
+                onClick={() => void handleAddRule()}
+              >
+                <Plus size={13} />
+                添加规则
+              </button>
+            </div>
+
+            {currentRules.length === 0 ? (
+              <p className="settings-caption">当前项目暂无自定义规则。也可在审批卡片中一键点击「加入项目允许规则」。</p>
+            ) : (
+              <div className="perm-rule-list">
+                {currentRules.map((rule) => (
+                  <div className="perm-rule-row" key={rule.id}>
+                    <span className={`perm-badge perm-action-${rule.action}`}>
+                      {PERMISSION_RULE_ACTION_LABELS[rule.action]}
+                    </span>
+                    <span className="mono-chip">{PERMISSION_RULE_TARGET_LABELS[rule.target]}</span>
+                    <code className="perm-pattern">{rule.pattern}</code>
+                    {rule.note && <span className="perm-note">{rule.note}</span>}
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="删除规则"
+                      aria-label={`删除规则 ${rule.pattern}`}
+                      disabled={saving}
+                      onClick={() => void handleDeleteRule(rule.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </section>
       <section className="settings-card settings-section settings-page-block">
         <h2>审批如何生效</h2>
         <dl className="settings-engine-meta">
@@ -119,7 +290,7 @@ export function ProjectPermissionsPage({ projects, activeProjectId, defaultPrese
             </div>
           ))}
         </dl>
-        <p className="settings-caption">预设在引擎发起审批时生效。静默执行的工具由引擎自身控制。已收到的高风险请求始终需要人工确认。</p>
+        <p className="settings-caption">预设与规则在引擎发起审批时生效。静默执行的工具由引擎自身控制。高风险命令始终要求人工确认（或被显式拒绝规则拦截）。</p>
       </section>
     </>
   )

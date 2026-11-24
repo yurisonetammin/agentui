@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, FolderGit2, FolderPlus, GitFork, History, Keyboard, Plus, RefreshCw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertCircle, ChevronRight, Columns2, FolderGit2, FolderPlus, GitFork, History, Keyboard, Loader2, Plus, RefreshCw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
 import { relativeTime, statusDotClass, statusLabel } from '../workbench'
 import {
   HARNESS_IDS,
   HARNESS_LABELS,
   type CliSessionSummary,
+  type ExtensionUiRequest,
   type HarnessId,
   type HarnessStatus,
   type ProjectEntry,
@@ -27,6 +28,8 @@ export function Sidebar({
   threads,
   activeProjectId,
   activeThreadId,
+  splitThreadId,
+  pendingUiQueue,
   cliSessions,
   onSelectHarness,
   onRefreshHarnesses,
@@ -39,6 +42,7 @@ export function Sidebar({
   onOpenTrust,
   onNewThread,
   onSelectThread,
+  onOpenInSplit,
   onDeleteThread,
   onRenameThread,
   onResumeCliSession,
@@ -50,6 +54,8 @@ export function Sidebar({
   threads: ThreadEntry[]
   activeProjectId: string | null
   activeThreadId: string | null
+  splitThreadId?: string | null
+  pendingUiQueue?: readonly ExtensionUiRequest[]
   cliSessions: CliSessionSummary[]
   onSelectHarness: (id: HarnessId) => void
   onRefreshHarnesses: () => void
@@ -62,6 +68,7 @@ export function Sidebar({
   onOpenTrust: (projectId: string) => void
   onNewThread: (projectId: string, harness: HarnessId) => void
   onSelectThread: (threadId: string) => void
+  onOpenInSplit?: (threadId: string) => void
   onDeleteThread: (threadId: string) => void
   onRenameThread: (threadId: string, title: string) => void
   onResumeCliSession: (session: CliSessionSummary) => void
@@ -104,6 +111,21 @@ export function Sidebar({
     }
   }
 
+  const pendingByThread = new Map<string, number>()
+  for (const req of pendingUiQueue ?? []) {
+    pendingByThread.set(req.threadId, (pendingByThread.get(req.threadId) ?? 0) + 1)
+  }
+  const projectNameById = new Map(projects.map((p) => [p.id, p.name]))
+  const waitingThreads = threads.filter(
+    (t) => t.status === 'waiting_ui' || (pendingByThread.get(t.id) ?? 0) > 0,
+  )
+  const runningThreads = threads.filter(
+    (t) =>
+      !waitingThreads.some((w) => w.id === t.id) &&
+      (t.status === 'streaming' || t.status === 'starting' || t.status === 'compacting'),
+  )
+  const hasLiveStatus = waitingThreads.length > 0 || runningThreads.length > 0
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -112,6 +134,59 @@ export function Sidebar({
         </button>
         <button type="button" className="icon-btn" title="新建会话" aria-label="新建会话" onClick={onStartDraft}><Plus size={17} /></button>
       </div>
+
+      {hasLiveStatus && (
+        <section className="sidebar-live-bar" aria-label="后台任务与待审批状态">
+          <div className="sidebar-live-summary">
+            {waitingThreads.length > 0 && (
+              <span className="sidebar-live-pill is-waiting">
+                <AlertCircle size={12} />
+                待审批 {waitingThreads.length}
+              </span>
+            )}
+            {runningThreads.length > 0 && (
+              <span className="sidebar-live-pill is-running">
+                <Loader2 size={12} className="spin" />
+                运行中 {runningThreads.length}
+              </span>
+            )}
+          </div>
+          <div className="sidebar-live-list">
+            {waitingThreads.map((t) => (
+              <button
+                key={`wait-${t.id}`}
+                type="button"
+                className={`sidebar-live-item is-waiting${activeThreadId === t.id ? ' active' : ''}`}
+                title={`点击跳转到「${t.title}」处理审批`}
+                onClick={() => {
+                  setCollapsedProjects((prev) => ({ ...prev, [t.projectId]: false }))
+                  onSelectThread(t.id)
+                }}
+              >
+                <span className="dot dot-waiting" />
+                <span className="sidebar-live-title">{t.title}</span>
+                <span className="sidebar-live-project">{projectNameById.get(t.projectId) ?? ''}</span>
+              </button>
+            ))}
+            {runningThreads.map((t) => (
+              <button
+                key={`run-${t.id}`}
+                type="button"
+                className={`sidebar-live-item is-running${activeThreadId === t.id ? ' active' : ''}`}
+                title={`点击查看运行中的会话「${t.title}」`}
+                onClick={() => {
+                  setCollapsedProjects((prev) => ({ ...prev, [t.projectId]: false }))
+                  onSelectThread(t.id)
+                }}
+              >
+                <span className="dot dot-streaming" />
+                <span className="sidebar-live-title">{t.title}</span>
+                <span className="sidebar-live-project">{projectNameById.get(t.projectId) ?? ''}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="sidebar-scroll">
         <div className="sidebar-section-header">
@@ -222,7 +297,22 @@ export function Sidebar({
                         </div>
                       </div>
                       {t.parentThreadId && <span className="fork-tag" title="分叉会话" aria-label="分叉会话"><GitFork size={11} /></span>}
+                      {splitThreadId === t.id && <span className="split-tag" title="正在右侧分屏显示">分屏</span>}
                       <time className="thread-time" dateTime={new Date(t.updatedAt).toISOString()}>{relativeTime(t.updatedAt, now)}</time>
+                      {onOpenInSplit && t.id !== activeThreadId && (
+                        <button
+                          type="button"
+                          className="icon-btn thread-split-btn"
+                          title="在右侧分屏打开"
+                          aria-label={`在右侧分屏打开 ${t.title}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onOpenInSplit(t.id)
+                          }}
+                        >
+                          <Columns2 size={12} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="icon-btn thread-remove"

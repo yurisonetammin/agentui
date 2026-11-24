@@ -1,5 +1,5 @@
-import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
-import { extname, join, resolve } from 'node:path'
+import { closeSync, openSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join, resolve } from 'node:path'
 import type { WorkspaceDirEntry, WorkspaceFileContent } from '@shared/types'
 import { isPathInside, isRealPathInside } from './process-utils'
 
@@ -20,6 +20,7 @@ const HIDDEN_DIRS = new Set([
 ])
 
 const MAX_READ_BYTES = 512 * 1024
+const MAX_WRITE_BYTES = 2 * 1024 * 1024
 const MAX_DIR_ENTRIES = 2_000
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
@@ -157,5 +158,25 @@ export class WorkspaceBrowserService {
       binary: false,
       language: detectLanguage(relPath),
     }
+  }
+
+  writeFile(cwd: string, relPath: string, content: string): { path: string; sizeBytes: number } {
+    if (!cwd || !relPath) throw new Error('缺少文件路径')
+    const abs = this.resolveInside(cwd, relPath)
+    const st = statSync(abs)
+    if (!st.isFile()) throw new Error(`只能保存已存在的普通文件: ${relPath}`)
+    const buf = Buffer.from(content, 'utf8')
+    if (buf.byteLength > MAX_WRITE_BYTES) {
+      throw new Error(`文件内容超过保存上限（${Math.round(MAX_WRITE_BYTES / 1024 / 1024)} MB）`)
+    }
+    const tmp = join(dirname(abs), `.agentui-edit-${process.pid}-${Date.now()}.tmp`)
+    try {
+      writeFileSync(tmp, buf)
+      renameSync(tmp, abs)
+    } catch (err) {
+      try { unlinkSync(tmp) } catch { /* ignore */ }
+      throw err
+    }
+    return { path: relPath, sizeBytes: buf.byteLength }
   }
 }

@@ -46,6 +46,10 @@ const api: AgentUiApi = {
   removeProject: (projectId: string) => ipcRenderer.invoke('projects:remove', projectId),
   setActiveProject: (projectId: string | null) => ipcRenderer.invoke('projects:setActive', projectId),
   setProjectTrust: (projectId, preset) => ipcRenderer.invoke('projects:setTrust', projectId, preset),
+  setProjectRules: (projectId, rules) => ipcRenderer.invoke('projects:setRules', projectId, rules),
+  addThreadSessionRule: (threadId, rule) => ipcRenderer.invoke('threads:addSessionRule', threadId, rule),
+  getThreadSessionRules: (threadId) => ipcRenderer.invoke('threads:getSessionRules', threadId),
+  clearThreadSessionRules: (threadId) => ipcRenderer.invoke('threads:clearSessionRules', threadId),
   createThread: (input: CreateThreadInput) => ipcRenderer.invoke('threads:create', input),
   deleteThread: (threadId: string) => ipcRenderer.invoke('threads:delete', threadId),
   setActiveThread: (threadId: string | null) => ipcRenderer.invoke('threads:setActive', threadId),
@@ -66,6 +70,11 @@ const api: AgentUiApi = {
   listWorkspaceFiles: (cwd: string, query?: string) => ipcRenderer.invoke('workspace:listFiles', cwd, query),
   listWorkspaceDir: (cwd: string, relPath?: string) => ipcRenderer.invoke('workspace:listDir', cwd, relPath),
   readWorkspaceFile: (cwd: string, relPath: string) => ipcRenderer.invoke('workspace:readFile', cwd, relPath),
+  writeWorkspaceFile: (cwd: string, relPath: string, content: string) =>
+    ipcRenderer.invoke('workspace:writeFile', cwd, relPath, content),
+  listExternalEditors: () => ipcRenderer.invoke('workspace:listEditors'),
+  openInExternalEditor: (cwd: string, relPath: string, line?: number, editor?: 'vscode' | 'cursor' | 'explorer') =>
+    ipcRenderer.invoke('workspace:openExternal', cwd, relPath, line, editor),
   terminalStart: (cwd: string, command: string) => ipcRenderer.invoke('terminal:start', cwd, command),
   terminalStop: (runId: string) => ipcRenderer.invoke('terminal:stop', runId),
   onTerminalOutput: (cb) => subscribe('agentui:terminalOutput', cb),
@@ -111,6 +120,11 @@ const api: AgentUiApi = {
   gitDiscardFile: (cwd: string, filePath: string, untracked?: boolean) =>
     ipcRenderer.invoke('git:discard', cwd, filePath, untracked),
   gitCommit: (cwd: string, message: string) => ipcRenderer.invoke('git:commit', cwd, message),
+  gitGenerateCommitMessage: (cwd: string, harness?: HarnessId) =>
+    ipcRenderer.invoke('git:generateCommitMessage', cwd, harness),
+  gitPush: (cwd: string) => ipcRenderer.invoke('git:push', cwd),
+  gitGetLinkedPr: (cwd: string, refresh?: boolean) => ipcRenderer.invoke('git:getLinkedPr', cwd, refresh),
+  gitCreatePr: (input: import('@shared/git-pr').GitPrCreateInput) => ipcRenderer.invoke('git:createPr', input),
   gitCreateWorktree: (repoPath: string, branchName: string, baseRef?: string) =>
     ipcRenderer.invoke('git:createWorktree', repoPath, branchName, baseRef),
   gitRemoveWorktree: (repoPath: string, worktreePath: string, force?: boolean) =>
@@ -155,8 +169,23 @@ const api: AgentUiApi = {
   browserWinStop: () => ipcRenderer.invoke('browserWin:stop') as Promise<BrowserWinTabInfo[]>,
   browserWinSetInsets: (top: number) => ipcRenderer.invoke('browserWin:setInsets', top),
   browserWinShare: (target: { threadId: string; kind: SharePayloadKind }) => ipcRenderer.invoke('browserWin:share', target),
+  browserWinStartPick: () => ipcRenderer.invoke('browserWin:startPick'),
+  browserWinCancelPick: () => ipcRenderer.invoke('browserWin:cancelPick'),
+  browserWinShareAnnotation: (input: import('@shared/browser-annotation').BrowserAnnotationShareInput) =>
+    ipcRenderer.invoke('browserWin:shareAnnotation', input),
   onBrowserWinTabs: (cb: (tabs: BrowserWinTabInfo[]) => void) => subscribe('agentui:browserWinTabs', cb),
   onShareToComposer: (cb: (event: ShareToComposerEvent) => void) => subscribe('agentui:shareToComposer', cb),
+
+  // ── 定时任务与 Prime 心跳 ──
+  schedulesList: () => ipcRenderer.invoke('schedules:list'),
+  schedulesUpsert: (input: import('@shared/scheduler').UpsertScheduledTaskInput) =>
+    ipcRenderer.invoke('schedules:upsert', input),
+  schedulesToggle: (taskId: string, enabled: boolean) => ipcRenderer.invoke('schedules:toggle', taskId, enabled),
+  schedulesDelete: (taskId: string) => ipcRenderer.invoke('schedules:delete', taskId),
+  schedulesRunNow: (taskId: string) => ipcRenderer.invoke('schedules:runNow', taskId),
+  schedulesPrimeHeartbeat: () => ipcRenderer.invoke('schedules:primeHeartbeat'),
+  onScheduleUpdated: (cb: (snapshot: import('@shared/scheduler').ScheduleSnapshot) => void) =>
+    subscribe('agentui:scheduleUpdated', cb),
 }
 
 contextBridge.exposeInMainWorld('agentui', api)

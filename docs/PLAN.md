@@ -70,3 +70,28 @@
 3. **自动化测试与安装包分发**（已完成，2026-11-21）：
    - [x] 引入基于 Playwright (`_electron.launch`) 的真实端到端回归套件（`playwright.config.ts` + `tests/e2e/app.spec.ts`，支持隔离 `AGENTUI_STATE_PATH` 与 `AGENTUI_E2E_EXECUTABLE` 校验打包后的 `.exe`）。
    - [x] 配置 `electron-builder`（`electron-builder.yml`）生成 Windows NSIS 安装包 / 绿色便携包及版本号注入脚本（`scripts/bump-version.mjs`）。
+
+---
+
+## Phase 4 — 工作流闭环与高阶桌面特性（P0 + P1 已完成，2026-11-24）
+
+目标：对齐 `t3code` / `gooey-pi` / `ccgui` / `pi-desktop` / `oh-my-pi-gui` / `dsh-codex-desktop` 的高频生产力与差异化桌面体验。
+
+### P0 工作流「最后一公里」
+1. **Git 交付闭环**：
+   - [x] `GitService` 新增远程/上游分支检测、`push`（首次自动 `-u`）、45s 缓存 `getLinkedPr` 与 `createPr`（`gh` CLI 创建或自动降级浏览器 Compare URL）。
+   - [x] `RuntimeManager.generateOneShotText` 驱动「AI 生成提交信息」（含启发式降级），顶栏展示 Linked PR 状态徽标。
+2. **细粒度 Allow / Ask / Deny 权限规则网关 +「本会话记住」**：
+   - [x] `src/shared/tool-policy.ts` 新增命令前缀/工具名/路径前缀规则表（`高风险兜底 > deny > ask > allow > 项目预设`），支持线程级临时会话规则与审批卡片一键放行记住，设置页提供可视化规则编辑。
+3. **轮次导航 + Diff 逐行批注回贴**：
+   - [x] 顶栏紧凑「N 轮」大纲浮层跳转虚拟滚动索引；Diff 行号支持点击/Shift/拖拽选择区间并内联写修改意见，格式化 `@path#L...` + diff 片段注入 Composer 草稿。
+
+### P1 高阶桌面端特性
+4. **独立浏览器 DOM 元素点选 & 视觉批注**：
+   - [x] `BrowserWindowService` 注入悬停高亮/点击抓取脚本提取 CSS 选择器、尺寸坐标、文本摘要并裁切元素局部截图，经文档流内嵌批注面板合并发送文本与截图到指定会话草稿。
+5. **定时 / Cron 自动任务、Prime 原生心跳与系统托盘驻留**：
+   - [x] 纯 JS 5 段 Cron 解析与 `ScheduleService`（`schedules.json` 原子持久化、失败桌面通知、无人值守权限隔离执行）、Prime 后台服务/原生计划只读探测、可选系统托盘后台驻留（`appearance.closeToTray`）。
+6. **CodeMirror 6 可编辑代码视图 + 一键外部 IDE 跳转 + 并排 Diff**：
+   - [x] 纯 JS CodeMirror 6 编辑器（深浅主题自适应、`Ctrl+S` 原子保存、`@path#L...` 选区引用）、`external-editor.ts` 一键唤起 VS Code / Cursor / 资源管理器精准行号、`DiffPanel` 单栏/并排（Side-by-Side）切换且保留行号批注。
+7. **双会话实时分屏 + Subagent 树状进度卡 + 全局待审批/运行中状态条**：
+   - [x] 侧栏顶部跨项目聚合「待审批 / 运行中」状态横条；主工作区左右双栏实时分屏对比（`SplitThreadPane`）；`AssistantMessage` 独立渲染 `Task`/`subagent`/`Agent` 嵌套进度卡片。

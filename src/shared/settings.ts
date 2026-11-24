@@ -11,6 +11,8 @@ export interface AppearanceSettings {
   codeFontSize: 12 | 13 | 14 | 16
   reduceMotion: boolean
   terminalPlacement: 'right' | 'bottom'
+  /** Closing the main window hides to system tray so scheduled tasks stay active. */
+  closeToTray: boolean
 }
 
 export interface ConversationSettings {
@@ -36,6 +38,7 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   codeFontSize: 12,
   reduceMotion: false,
   terminalPlacement: 'right',
+  closeToTray: false,
 }
 
 export const DEFAULT_HARNESS_SETTINGS: HarnessDefaults = { model: null, thinkingLevel: null }
@@ -52,6 +55,7 @@ export function normalizeAppearance(value?: Partial<AppearanceSettings> | null):
     codeFontSize: value?.codeFontSize && CODE_FONT_SIZES.includes(value.codeFontSize) ? value.codeFontSize : 12,
     reduceMotion: value?.reduceMotion === true,
     terminalPlacement: value?.terminalPlacement === 'bottom' ? 'bottom' : 'right',
+    closeToTray: value?.closeToTray === true,
   }
 }
 

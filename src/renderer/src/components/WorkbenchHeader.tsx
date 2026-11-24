@@ -1,9 +1,12 @@
 import { useEffect, useRef } from 'react'
-import { AppWindow, ArrowLeft, ChevronDown, Command, Files, GitCompareArrows, GitFork, Globe, Minimize2, Terminal } from 'lucide-react'
+import { AppWindow, ArrowLeft, ChevronDown, Columns2, Command, ExternalLink, Files, GitCompareArrows, GitFork, GitPullRequest, Globe, Minimize2, Terminal } from 'lucide-react'
+import type { LinkedPullRequest } from '@shared/git-pr'
+import type { TurnNavEntry } from '@shared/turn-navigator'
 import { HARNESS_LABELS, type ContextUsageInfo, type HarnessId, type ThreadEntry } from '@shared/types'
 import brandIcon from '../assets/brand-icon.png'
 import { statusDotClass, statusLabel } from '../workbench'
 import type { WorkspacePanelTab } from './DiffPanel'
+import { TurnNavigator } from './TurnNavigator'
 
 export const WORKSPACE_TOOLS = [
   { tab: 'changes', label: '变更', icon: GitCompareArrows },
@@ -21,6 +24,13 @@ interface Props {
   statusText: string | null | undefined
   activeTool: WorkspacePanelTab | null
   terminalDocked: boolean
+  linkedPr?: LinkedPullRequest | null
+  turns?: readonly TurnNavEntry[]
+  splitOpen?: boolean
+  canSplit?: boolean
+  onToggleSplit?: () => void
+  onJumpToTurn?: (timelineIndex: number) => void
+  onOpenTurnDiff?: (summaryId: string) => void
   onToggleTool: (tab: WorkspacePanelTab) => void
   onOpenPalette: () => void
   onOpenBrowserWindow: () => void
@@ -31,6 +41,7 @@ interface Props {
 
 export function WorkbenchHeader({
   thread, harness, ready, cwd, context, statusText, activeTool, terminalDocked,
+  linkedPr, turns, splitOpen, canSplit, onToggleSplit, onJumpToTurn, onOpenTurnDiff,
   onToggleTool, onOpenPalette, onOpenBrowserWindow, onFork, onCompact, onCloseSettings,
 }: Props) {
   const detailsRef = useRef<HTMLDetailsElement>(null)
@@ -90,8 +101,38 @@ export function WorkbenchHeader({
         </details>
         <span className={`harness-tag tag-${harness}`}>{HARNESS_LABELS[harness]}</span>
         <span className={`dot ${thread ? statusDotClass(thread.status) : ready ? 'dot-ready' : 'dot-idle'}`} title={status} role="img" aria-label={status} />
+        {linkedPr && (
+          <a
+            className={`header-pr-badge pr-state-${linkedPr.state.toLowerCase()}`}
+            href={linkedPr.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`${linkedPr.title} (${linkedPr.state})`}
+          >
+            <GitPullRequest size={12} />
+            <span>PR #{linkedPr.number}</span>
+            <span className="header-pr-state">{linkedPr.state}</span>
+            <ExternalLink size={11} />
+          </a>
+        )}
       </div>}
       <div className="topbar-right">
+        {!onCloseSettings && turns && turns.length > 0 && onJumpToTurn && (
+          <TurnNavigator turns={turns} onJumpToTurn={onJumpToTurn} onOpenTurnDiff={onOpenTurnDiff} />
+        )}
+        {!onCloseSettings && onToggleSplit && (
+          <button
+            type="button"
+            className="icon-btn"
+            aria-pressed={Boolean(splitOpen)}
+            disabled={!splitOpen && !canSplit}
+            title={splitOpen ? '关闭双会话分屏' : canSplit ? '双会话实时分屏对比' : '创建至少 2 个会话后可开启分屏对比'}
+            aria-label={splitOpen ? '关闭双会话分屏' : '开启双会话分屏'}
+            onClick={onToggleSplit}
+          >
+            <Columns2 size={15} />
+          </button>
+        )}
         <button type="button" className="icon-btn" title="独立浏览器窗口（登录状态与工作台隔离）" aria-label="独立浏览器窗口"
           onClick={onOpenBrowserWindow}>
           <AppWindow size={15} />

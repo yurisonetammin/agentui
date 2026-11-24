@@ -287,3 +287,223 @@
 .ext-browser-notes kbd { padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 4px; font-size: 11px; }
 .settings-meta-pair { display: contents; }
 .ext-confirm-panel { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--accent); border-radius: var(--radius-small); background: var(--accent-soft); }
+
+/* ── Fine-grained Allow / Ask / Deny permission rules ──────────────── */
+.perm-rule-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.perm-rule-select { width: auto; flex: 0 0 auto; min-width: 116px; }
+.perm-rule-pattern { flex: 1 1 200px; min-width: 160px; font-family: var(--mono); font-size: 12px; }
+.perm-rule-note { flex: 0 1 150px; min-width: 110px; }
+.perm-rule-list { display: flex; flex-direction: column; gap: 6px; }
+.perm-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-root);
+  min-width: 0;
+}
+.perm-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-small);
+  flex-shrink: 0;
+}
+.perm-action-allow { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.perm-action-ask { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
+.perm-action-deny { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.perm-pattern {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.perm-note { font-size: 12px; color: var(--text-muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── P1: Scheduled tasks & Prime heartbeat settings ─────────────────── */
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.schedule-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.schedule-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.schedule-form-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.schedule-preset-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.schedule-preset-row .btn-small.is-selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.schedule-cron-err {
+  font-size: 12px;
+  color: var(--danger);
+}
+.schedule-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.schedule-checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px !important;
+  cursor: pointer;
+}
+.schedule-task-list,
+.schedule-run-list,
+.schedule-prime-daemons,
+.schedule-prime-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schedule-task-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border);
+  background: var(--bg-root);
+}
+.schedule-task-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.schedule-task-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.schedule-task-prompt {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.schedule-task-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.schedule-task-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.schedule-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.schedule-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.schedule-badge.is-ok { background: rgba(52, 211, 153, 0.16); color: var(--success); }
+.schedule-badge.is-err { background: rgba(248, 113, 113, 0.16); color: var(--danger); }
+.schedule-badge.is-running { background: var(--accent-soft); color: var(--accent); }
+.schedule-prime-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schedule-prime-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.schedule-prime-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--bg-root);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.schedule-prime-prompt {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-run-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-root);
+  overflow: hidden;
+}
+.schedule-run-item > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.schedule-run-time {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.schedule-run-body {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+.schedule-run-summary {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  max-height: 220px;
+  overflow: auto;
+}

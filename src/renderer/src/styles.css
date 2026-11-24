@@ -27,6 +27,14 @@
   --diff-add-text: #86efac;
   --diff-del-bg: rgba(239, 68, 68, 0.14);
   --diff-del-text: #fca5a5;
+  --cm-keyword: #c084fc;
+  --cm-string: #6ee7b7;
+  --cm-comment: #7c8594;
+  --cm-number: #fbbf24;
+  --cm-fn: #7dd3fc;
+  --cm-type: #93c5fd;
+  --cm-tag: #f9a8d4;
+  --cm-prop: #a5b4fc;
   --mono: 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
   --sidebar-width: 236px;
@@ -67,6 +75,14 @@
     --diff-add-text: #245d40;
     --diff-del-bg: #f5e3e4;
     --diff-del-text: #9a303a;
+    --cm-keyword: #7c3aed;
+    --cm-string: #15803d;
+    --cm-comment: #6b7280;
+    --cm-number: #b45309;
+    --cm-fn: #1d4ed8;
+    --cm-type: #0369a1;
+    --cm-tag: #be185d;
+    --cm-prop: #4338ca;
   }
 }
 

@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Clock,
   Cpu,
   FolderOpen,
   Gauge,
@@ -29,17 +30,19 @@ import {
   CODE_FONT_SIZES, DEFAULT_APPEARANCE, DEFAULT_HARNESS_SETTINGS, THINKING_LABELS,
   type AppearanceSettings, type ConversationSettings, type HarnessDefaults,
 } from '@shared/settings'
-import type { TrustPreset } from '@shared/tool-policy'
+import type { ToolPermissionRule, TrustPreset } from '@shared/tool-policy'
 import { HARNESS_IDS, HARNESS_LABELS, THINKING_LEVELS, type HarnessId, type HarnessStatus, type ModelCatalogResult, type ProjectEntry, type ThinkingLevel } from '@shared/types'
 import { errorText, Segments, SettingsRow } from './SettingsControls'
 import { ConversationPage, DiagnosticsPage, ProjectPermissionsPage } from './SettingsWorkflowPages'
 import { BrowserSettingsPage, HerdrSettingsPage, McpSettingsPage, PluginsSettingsPage, SkillsSettingsPage, UsageSettingsPage } from './SettingsExtensionsPages'
+import { SchedulesSettingsPage } from './SettingsSchedulesPage'
 
 const SETTINGS_SECTIONS = {
   engines: { label: '引擎与模型', icon: Cpu },
   mcp: { label: 'MCP 服务器', icon: Server },
   plugins: { label: '插件', icon: Puzzle },
   skills: { label: '技能', icon: Sparkles },
+  schedules: { label: '定时任务', icon: Clock },
   usage: { label: '使用情况', icon: Gauge },
   browser: { label: '浏览器', icon: AppWindow },
   herdr: { label: 'Herdr', icon: SquareTerminal },
@@ -78,6 +81,9 @@ export const SETTINGS_LINKS: Array<SettingsDestination & { label: string; keywor
     label: `技能 · ${EXTENSION_ENGINE_LABELS[engine]}`, keywords: '技能 预览 SKILL.md',
   })),
   { section: 'usage', label: '使用情况', keywords: '用量 token 费用 额度 统计 报表 上下文' },
+  { section: 'schedules', label: '定时任务与心跳', keywords: 'cron 定时 自动化 巡检 心跳 heartbeat prime 托盘 tray' },
+  { section: 'schedules', anchor: 'schedules-tray', label: '系统托盘后台驻留', keywords: '托盘 tray 关闭最小化 后台运行' },
+  { section: 'schedules', anchor: 'schedules-prime', label: 'Prime 后台服务与心跳', keywords: 'prime daemon heartbeat schedule' },
   { section: 'browser', label: '浏览器', keywords: '浏览器 独立窗口 标签页 分享 登录隔离 ego' },
   { section: 'herdr', label: 'Herdr 终端', keywords: 'herdr 持久终端 终端 观察接管 分屏 工作区' },
   { section: 'herdr', anchor: 'herdr-path', label: 'Herdr 路径', keywords: 'herdr 可执行文件 CLI' },
@@ -103,6 +109,7 @@ export const SETTINGS_LINKS: Array<SettingsDestination & { label: string; keywor
   { section: 'projects', label: '项目与权限', keywords: '信任' },
   { section: 'projects', anchor: 'projects-default', label: '新项目默认预设', keywords: '只读 自动 权限' },
   { section: 'projects', anchor: 'projects-trust', label: '项目审批预设', keywords: '工具 只读 自动 信任' },
+  { section: 'projects', anchor: 'projects-rules', label: '细粒度权限规则', keywords: 'allow ask deny 白名单 黑名单 命令 路径 规则' },
   { section: 'diagnostics', label: '诊断与关于' },
   { section: 'diagnostics', anchor: 'diagnostics-about', label: '应用版本与诊断摘要', keywords: '系统 GitHub 复制' },
   { section: 'diagnostics', anchor: 'diagnostics-engines', label: '引擎探测结果', keywords: 'CLI 版本 诊断' },
@@ -137,6 +144,7 @@ interface Props {
   onSaveAppearance: (patch: Partial<AppearanceSettings>) => Promise<void>
   onSaveConversation: (patch: Partial<ConversationSettings>) => Promise<void>
   onSaveProjectTrust: (id: string, preset: TrustPreset) => Promise<void>
+  onSaveProjectRules: (id: string, rules: ToolPermissionRule[]) => Promise<void>
   onSaveDefaultProjectTrust: (preset: TrustPreset) => Promise<void>
 }
 
@@ -452,7 +460,8 @@ export function SettingsPage(props: Props) {
           {destination.section === 'appearance' && <AppearancePage settings={props.appearance} onSave={props.onSaveAppearance} />}
           {destination.section === 'conversation' && <ConversationPage settings={props.conversation} onSave={props.onSaveConversation} />}
           {destination.section === 'projects' && <ProjectPermissionsPage projects={props.projects} activeProjectId={props.activeProjectId}
-            defaultPreset={props.defaultProjectTrust} onSaveProject={props.onSaveProjectTrust} onSaveDefault={props.onSaveDefaultProjectTrust} />}
+            defaultPreset={props.defaultProjectTrust} onSaveProject={props.onSaveProjectTrust}
+            onSaveProjectRules={props.onSaveProjectRules} onSaveDefault={props.onSaveDefaultProjectTrust} />}
           {destination.section === 'diagnostics' && <DiagnosticsPage />}
           {destination.section === 'mcp' && <McpSettingsPage engine={extensionEngine} onEngineChange={switchExtensionEngine}
             projects={props.projects} activeProjectId={props.activeProjectId} harnesses={extensionHarnesses} />}
@@ -462,6 +471,9 @@ export function SettingsPage(props: Props) {
             projects={props.projects} activeProjectId={props.activeProjectId} harnesses={extensionHarnesses}
             sessionEngine={props.sessionEngine} sessionCommands={props.sessionCommands} onInsertToComposer={props.onInsertToComposer} />}
           {destination.section === 'usage' && <UsageSettingsPage projects={props.projects} />}
+          {destination.section === 'schedules' && <SchedulesSettingsPage projects={props.projects}
+            activeProjectId={props.activeProjectId} activeHarness={props.activeHarness}
+            appearance={props.appearance} onSaveAppearance={props.onSaveAppearance} />}
           {destination.section === 'browser' && <BrowserSettingsPage onOpenBrowserWindow={props.onOpenBrowserWindow} />}
           {destination.section === 'herdr' && <HerdrSettingsPage projects={props.projects} />}
           {destination.section === 'engines' && <>

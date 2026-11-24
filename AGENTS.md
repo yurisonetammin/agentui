@@ -5,7 +5,7 @@
 ## 1. 项目定位与技术栈
 
 - **目标**：轻量、完全自主可控的 Codex / DeepSeek Harness (`dsh`) 风格编码 Agent 桌面工作台，支持 **Pi**、**OMP (`oh-my-pi`)**、**Prime Agent** 三引擎原生 RPC，以及经统一传输层桥接的 **Claude Code (`stream-json`)**、**Codex App Server**、**ACP (Agent Client Protocol)**、**dsh (`--profile acp`)** 共 7 引擎自动探测、并发运行与实时代码变更审阅。能力矩阵见 [src/shared/capabilities.ts](src/shared/capabilities.ts)。
-- **技术栈**：Electron (`^35.2.0`) + TypeScript (`^5.8.3`) + `electron-vite` (`^3.1.0`) + React (`^19.1.0`) + Vite (`^6.3.5`) + Vitest (`^3.1.3`) + `@tanstack/react-virtual`（时间线/Tool 输出虚拟滚动）+ `highlight.js`（只读文件预览高亮）。
+- **技术栈**：Electron (`^35.2.0`) + TypeScript (`^5.8.3`) + `electron-vite` (`^3.1.0`) + React (`^19.1.0`) + Vite (`^6.3.5`) + Vitest (`^3.1.3`) + `@tanstack/react-virtual`（时间线/Tool 输出虚拟滚动）+ `codemirror`（纯 JS CodeMirror 6 可编辑文件视图）+ `highlight.js`。
 - **重要约束 — 零 C++ 原生模块**：目标开发机当前无 Rust (`rustc`/`cargo`) 与 MSVC Build Tools (`cl.exe`/`link.exe`/Windows SDK)。严禁引入 `node-pty`、`better-sqlite3`、`keytar` 等需要 `node-gyp` 编译的原生依赖；当前内嵌终端为**非 PTY 命令运行器**（见铁律 8），升级 PTY 需确认编译工具链或选用 prebuild 方案（路径见 [docs/PLAN.md](docs/PLAN.md)）。
 - **保留目录**：仓库内的 `.workbuddy/` 为用户原有目录，任何任务都**不要删除或修改**。
 
@@ -25,6 +25,11 @@
 | [src/shared/mcp-config.ts](src/shared/mcp-config.ts) | MCP 配置文件解析（JSON / Codex TOML）、`collectMcpEntries`（rank 标注）、`resolveMcpShadowing`（同名/同端点覆盖关系）；browser-companion 从此 re-export |
 | [src/shared/extensions.ts](src/shared/extensions.ts) | 设置页「MCP / 插件 / 技能 / 使用情况」共享类型与纯函数：三引擎能力门控、CLI 输出解析（`pi mcp list` / `omp plugin` / `omp skill` / `omp stats` / `omp usage` / `prime-agent sessions`）、`extractUsageRecordsFromSession` + `aggregateUsage`（单次模型调用去重聚合） |
 | [src/shared/browser-url.ts](src/shared/browser-url.ts) | 浏览器地址栏输入规范化（无协议自动补全） |
+| [src/shared/browser-annotation.ts](src/shared/browser-annotation.ts) | 独立浏览器 DOM 元素点选数据结构与 Composer 批注格式化纯函数 |
+| [src/shared/scheduler.ts](src/shared/scheduler.ts) | 纯 JS 5 段 Cron 解析、`nextCronRun` 计算、定时任务类型与 Prime 后台状态/计划解析 |
+| [src/shared/subagent.ts](src/shared/subagent.ts) | 识别与提取 Subagent / `Task` 委派类工具调用信息的纯函数 |
+| [electron/main/schedule-service.ts](electron/main/schedule-service.ts) | `ScheduleService`：纯 JS 定时任务调度、原子持久化至 `schedules.json`、失败桌面通知与 Prime 原生心跳/计划只读探测 |
+| [electron/main/external-editor.ts](electron/main/external-editor.ts) | 外部编辑器（VS Code / Cursor / 系统资源管理器）探测与 `shell: false` 精准行号打开（含路径越界守卫） |
 | [assets/](assets/) | 应用透明圆角图标资源（`icon.ico` 多分辨率 16–256px、`icon.png` 512px） |
 | [electron/main/index.ts](electron/main/index.ts) | Electron 入口、窗口创建与图标绑定、`AppUserModelId`、`sandbox: true`、`.cjs` preload、`will-navigate` 安全拦截、`AGENTUI_STATE_PATH` |
 | [electron/main/ipc.ts](electron/main/ipc.ts) | 注册所有 `ipcMain.handle` 路由 |
@@ -41,7 +46,7 @@
 | [electron/main/rpc/manager.ts](electron/main/rpc/manager.ts) | `RuntimeManager`，多会话并发隔离进程池、乐观消息插入与时间线缓存；`handleExtensionUiRequest` 按项目信任预设在审批边界拦截 confirm/select（自动放行/拒绝留痕、高风险强制人工确认） |
 | [electron/main/sessions/catalog.ts](electron/main/sessions/catalog.ts) | 扫描与回放 CLI 原生 `.jsonl` 历史会话（Pi 风格 + Claude uuid/parentUuid 链，内容嗅探区分）、活跃分支树解析与非破坏性分叉文件生成；桥接引擎会话降级提示 |
 | [electron/main/workspace-files.ts](electron/main/workspace-files.ts) | `WorkspaceFileService`：基于 `git ls-files -z`（含非 Git 目录回退）与短缓存的 `@file` 文件索引 |
-| [electron/main/workspace-browser.ts](electron/main/workspace-browser.ts) | `WorkspaceBrowserService`：文件树懒加载 listing 与只读预览（路径越界守卫、隐藏目录过滤、512KB 截断、二进制检测、语言识别） |
+| [electron/main/workspace-browser.ts](electron/main/workspace-browser.ts) | `WorkspaceBrowserService`：文件树懒加载 listing、只读/可编辑读写（路径越界守卫、隐藏目录过滤、512KB 读取截断、2MB 原子保存、二进制检测、语言识别） |
 | [electron/main/terminal-service.ts](electron/main/terminal-service.ts) | `TerminalService`：零原生非 PTY 命令运行器（显式 shell 进程、并发上限 4、10 分钟超时、进程树强杀） |
 | [electron/main/herdr-service.ts](electron/main/herdr-service.ts) | `HerdrService`：可选 Herdr 持久终端集成——CLI 检测（60s 缓存）、`herdr` 子命令封装（`prepareExecutableSpawn` + `shell:false`）、`api snapshot`/工作区/关联/pane read/agent 启动、`terminal session observe|control` 流子进程管理（NDJSON→帧事件、接管/释放） |
 | [electron/main/extensions/](electron/main/extensions/) | `engine-cli.ts`（三引擎 CLI 子命令执行，带 `harnessChildEnvironment` 环境修正）、`mcp-service.ts`（Pi `pi mcp add/remove/list --json`、OMP 自有配置直写 + 第三方来源覆盖展示、Prime `prime-agent mcp`；含「配置改动对运行中会话的生效状态」）、`package-service.ts`（`pi install/remove/update/list`、`omp plugin`、`prime-agent package`）、`skill-service.ts`（`omp skill list --json`、Pi/Prime 技能目录扫描、`readSkillFile` 白名单预览） |
@@ -53,7 +58,7 @@
 | [src/renderer/src/App.tsx](src/renderer/src/App.tsx) | 根工作台：事件流订阅、时间线虚拟滚动（react-virtual 动态测高 + 贴底跟随）、`@file`/`/slash` 补全、图片粘贴/拖拽、分叉树与对比、在对应会话时间线内排队显示 `ExtensionUiCard`、模型/Thinking 切换、Steer/Follow-up/Abort |
 | [src/renderer/src/components/](src/renderer/src/components/) | `WorkbenchHeader`（标题栏、工作区工具与独立浏览器按钮）、`CommandPalette`（搜索会话与快速导航，含「打开独立浏览器」）、`Sidebar`（可折叠项目、会话与引擎状态）、`ComposerAutocomplete`、`ForkTreeModal`（节点树与多分支并排对比）、`DiffPanel`（变更、文件、终端、浏览器与工作树标签，支持预览回合 Diff）、`WorkspaceFilesPanel`（文件树 + highlight.js 只读预览 + `@引用`）、`TerminalPanel`（多运行切换、输出节流缓冲、命令历史）、`HerdrPanel`（Herdr 工作区树/Agent 状态/只读快照/关联与新建会话）、`HerdrTerminalView`（xterm.js 实时终端：观察默认、接管输入、关闭释放控制权）、`MarkdownView`（代码块复制）、`ThinkingBlock`、`ToolCallCard`（>400 行输出虚拟滚动）、`SettingsPage`（引擎与模型、**MCP 服务器、插件、技能、使用情况、浏览器、Herdr**、外观与布局、会话与快捷键、项目与权限、诊断与关于；MCP/插件/技能共用 Pi/OMP/Prime 切换器）、`SettingsExtensionsPages`（五个新入口的实现，含添加服务器表单、插件安装/卸载、技能预览与插入输入框、用量报表三卡与筛选、浏览器窗口说明）、`ShortcutsModal`、`ExtensionUiCard`（内嵌审批、权限预设与高风险命令）、`ProjectTrustModal`（三预设配置）、`BrowserPanel`（ego 状态 / MCP 列表 / 打开 URL / 标签页 / 截图回贴） |
 | [src/renderer/browser.html + browser-src/](src/renderer/browser.html) | 独立浏览器窗口渲染端（第二 Vite 入口）：标签条、地址栏、前进后退、刷新/停止、分享面板（链接/选中文本/截图 → 选目标会话）；`Ctrl+T`/`Ctrl+W` 管理标签 |
-| [tests/](tests/) | Vitest 单元测试套件（当前 22 个测试文件；`claude-live-handshake.test.ts` 为真实 CLI 集成测试，未安装时自动跳过；`browser-companion.test.ts` 含真实 ego 探测与 `AGENTUI_LIVE_BROWSER=1` 门控的打开/截图端到端用例；`p1-fixes.test.ts` 覆盖 P1 评审修复：Claude/Codex 桥接去重与审批撤销、set_model 双层回滚、Codex 信任预设沙箱联动、MCP TOML 解析；`extensions.test.ts` 覆盖 MCP 配置覆盖合并、OMP 配置读写、CLI 输出解析、用量去重聚合与地址栏规范化） |
+| [tests/](tests/) | Vitest 单元测试套件（当前 26 个测试文件 + Playwright Electron E2E `tests/e2e/app.spec.ts` 12 项；含 `p0-workflow.test.ts` 与 `p1-features.test.ts`） |
 
 ## 3. 核心工程铁律（修改代码时严禁破坏）
 

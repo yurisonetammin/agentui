@@ -28,7 +28,7 @@ export interface BrowserWinTabInfo {
   favicon?: string
 }
 
-export type SharePayloadKind = 'link' | 'text' | 'image'
+export type SharePayloadKind = 'link' | 'text' | 'image' | 'annotation'
 
 export interface ShareToThreadInput {
   kind: SharePayloadKind
@@ -117,6 +117,8 @@ export interface ProjectEntry {
   defaultHarness: HarnessId
   /** Tool-permission preset for this project; defaults to 'approval'. */
   trustPreset?: import('./tool-policy').TrustPreset
+  /** Fine-grained allow/ask/deny permission rules evaluated before the preset. */
+  permissionRules?: import('./tool-policy').ToolPermissionRule[]
 }
 
 export type ThreadRunStatus =
@@ -185,6 +187,15 @@ export interface WorkspaceFileContent {
   truncated: boolean
   binary: boolean
   language?: string
+}
+
+export type ExternalEditorId = 'vscode' | 'cursor' | 'explorer'
+
+export interface ExternalEditorInfo {
+  id: ExternalEditorId
+  label: string
+  available: boolean
+  path?: string | null
 }
 
 export interface TerminalOutputEvent {
@@ -377,6 +388,8 @@ export interface ExtensionUiRequest {
   /** Risk assessment attached by the project trust policy (confirm/select only). */
   risk?: { level: import('./tool-policy').ToolRiskLevel; reasons: string[]; command?: string | null }
   policyPreset?: import('./tool-policy').TrustPreset
+  /** Suggested rule target + pattern for one-click "remember in session / project" shortcuts. */
+  suggestedRule?: { target: import('./tool-policy').PermissionRuleTarget; pattern: string } | null
 }
 
 export interface ExtensionUiResponse {
@@ -410,6 +423,12 @@ export interface GitStatusSummary {
   branch: string | null
   ahead: number
   behind: number
+  /** True when the current branch tracks an upstream remote branch. */
+  hasUpstream?: boolean
+  /** Remote repository URL (origin or first remote) for push & PR compare URLs. */
+  remoteUrl?: string | null
+  /** True when GitHub CLI (`gh`) is detected on the host machine. */
+  ghAvailable?: boolean
   changes: GitFileChange[]
   worktrees: GitWorktreeInfo[]
   error?: string
@@ -498,6 +517,13 @@ export interface AgentUiApi {
   removeProject(projectId: string): Promise<void>
   setActiveProject(projectId: string | null): Promise<void>
   setProjectTrust(projectId: string, preset: import('./tool-policy').TrustPreset): Promise<ProjectEntry>
+  setProjectRules(projectId: string, rules: import('./tool-policy').ToolPermissionRule[]): Promise<ProjectEntry>
+  addThreadSessionRule(
+    threadId: string,
+    rule: Omit<import('./tool-policy').ToolPermissionRule, 'id' | 'createdAt'>,
+  ): Promise<import('./tool-policy').ToolPermissionRule[]>
+  getThreadSessionRules(threadId: string): Promise<import('./tool-policy').ToolPermissionRule[]>
+  clearThreadSessionRules(threadId: string): Promise<void>
   createThread(input: CreateThreadInput): Promise<ThreadEntry>
   deleteThread(threadId: string): Promise<void>
   setActiveThread(threadId: string | null): Promise<void>
@@ -515,6 +541,14 @@ export interface AgentUiApi {
   listWorkspaceFiles(cwd: string, query?: string): Promise<WorkspaceFileEntry[]>
   listWorkspaceDir(cwd: string, relPath?: string): Promise<WorkspaceDirEntry[]>
   readWorkspaceFile(cwd: string, relPath: string): Promise<WorkspaceFileContent>
+  writeWorkspaceFile(cwd: string, relPath: string, content: string): Promise<{ path: string; sizeBytes: number }>
+  listExternalEditors(): Promise<ExternalEditorInfo[]>
+  openInExternalEditor(
+    cwd: string,
+    relPath: string,
+    line?: number,
+    editor?: ExternalEditorId,
+  ): Promise<{ editor: ExternalEditorId; target: string }>
   terminalStart(cwd: string, command: string): Promise<string>
   terminalStop(runId: string): Promise<void>
   onTerminalOutput(cb: (event: TerminalOutputEvent) => void): () => void
@@ -556,6 +590,10 @@ export interface AgentUiApi {
   gitUnstageFile(cwd: string, filePath: string): Promise<void>
   gitDiscardFile(cwd: string, filePath: string, untracked?: boolean): Promise<void>
   gitCommit(cwd: string, message: string): Promise<void>
+  gitGenerateCommitMessage(cwd: string, harness?: HarnessId): Promise<import('./git-pr').GitCommitSuggestion>
+  gitPush(cwd: string): Promise<import('./git-pr').GitPushResult>
+  gitGetLinkedPr(cwd: string, refresh?: boolean): Promise<import('./git-pr').LinkedPullRequest | null>
+  gitCreatePr(input: import('./git-pr').GitPrCreateInput): Promise<import('./git-pr').GitPrCreateResult>
   gitCreateWorktree(repoPath: string, branchName: string, baseRef?: string): Promise<GitWorktreeInfo>
   gitRemoveWorktree(repoPath: string, worktreePath: string, force?: boolean): Promise<void>
   onThreadEvent(cb: (envelope: ThreadEventEnvelope) => void): () => void
@@ -588,6 +626,18 @@ export interface AgentUiApi {
   browserWinStop(): Promise<BrowserWinTabInfo[]>
   browserWinSetInsets(top: number): Promise<void>
   browserWinShare(target: { threadId: string; kind: SharePayloadKind }): Promise<void>
+  browserWinStartPick(): Promise<import('./browser-annotation').BrowserPickedElement | null>
+  browserWinCancelPick(): Promise<void>
+  browserWinShareAnnotation(input: import('./browser-annotation').BrowserAnnotationShareInput): Promise<void>
   onBrowserWinTabs(cb: (tabs: BrowserWinTabInfo[]) => void): () => void
   onShareToComposer(cb: (event: ShareToComposerEvent) => void): () => void
+
+  // ── 定时任务与 Prime 心跳 ──
+  schedulesList(): Promise<import('./scheduler').ScheduleSnapshot>
+  schedulesUpsert(input: import('./scheduler').UpsertScheduledTaskInput): Promise<import('./scheduler').ScheduleSnapshot>
+  schedulesToggle(taskId: string, enabled: boolean): Promise<import('./scheduler').ScheduleSnapshot>
+  schedulesDelete(taskId: string): Promise<import('./scheduler').ScheduleSnapshot>
+  schedulesRunNow(taskId: string): Promise<import('./scheduler').ScheduleRunRecord>
+  schedulesPrimeHeartbeat(): Promise<import('./scheduler').PrimeHeartbeatStatus>
+  onScheduleUpdated(cb: (snapshot: import('./scheduler').ScheduleSnapshot) => void): () => void
 }

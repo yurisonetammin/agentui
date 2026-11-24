@@ -29,9 +29,11 @@ import {
   parseBuiltinSlashCommand,
 } from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
+import type { LinkedPullRequest } from '@shared/git-pr'
 import { matchGlobalShortcut, runningMessageAction } from '@shared/shortcuts'
 import { DEFAULT_APPEARANCE, DEFAULT_CONVERSATION, THINKING_LABELS, type AppearanceSettings, type ConversationSettings, type HarnessDefaults } from '@shared/settings'
-import { TRUST_PRESETS, TRUST_PRESET_LABELS, type TrustPreset } from '@shared/tool-policy'
+import { TRUST_PRESETS, TRUST_PRESET_LABELS, type ToolPermissionRule, type TrustPreset } from '@shared/tool-policy'
+import { buildTurnNavEntries } from '@shared/turn-navigator'
 import { dequeueUiRequest, enqueueUiRequest, pruneUiRequestsForThread } from '@shared/ui-queue'
 import {
   HARNESS_IDS,
@@ -67,6 +69,7 @@ import { ProjectTrustModal } from './components/ProjectTrustModal'
 import { SettingsPage, SETTINGS_LINKS, settingsSectionLabel, type SettingsDestination } from './components/SettingsPage'
 import { ShortcutsModal } from './components/ShortcutsModal'
 import { Sidebar } from './components/Sidebar'
+import { SplitThreadPane } from './components/SplitThreadPane'
 import { TerminalPanel } from './components/TerminalPanel'
 import { HerdrPanel } from './components/HerdrPanel'
 import { WorkbenchHeader } from './components/WorkbenchHeader'
@@ -160,6 +163,7 @@ export function App() {
   const [threads, setThreads] = useState<ThreadEntry[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
+  const [splitThreadId, setSplitThreadId] = useState<string | null>(null)
   const [timelines, setTimelines] = useState<Record<string, TimelineItem[]>>({})
   const [contextUsages, setContextUsages] = useState<Record<string, ContextUsageInfo>>({})
   const [catalogs, setCatalogs] = useState<Partial<Record<HarnessId, ModelCatalogResult>>>({})
@@ -170,6 +174,8 @@ export function App() {
   const [harnessDefaults, setHarnessDefaults] = useState<Partial<Record<HarnessId, HarnessDefaults>>>({})
   const [cliSessions, setCliSessions] = useState<CliSessionSummary[]>([])
   const [gitSnapshot, setGitSnapshot] = useState<{ cwd: string; status: GitStatusSummary | null } | null>(null)
+  const [linkedPrSnapshot, setLinkedPrSnapshot] = useState<{ cwd: string; pr: LinkedPullRequest | null } | null>(null)
+  const [highlightedRowIndex, setHighlightedRowIndex] = useState<number | null>(null)
   const [selectedTurn, setSelectedTurn] = useState<{ threadId: string; summaryId: string } | null>(null)
   const [initialPanel] = useState(readPanelPreferences)
   const [showDiffPanel, setShowDiffPanel] = useState(initialPanel.open)
@@ -217,6 +223,8 @@ export function App() {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const fileReqIdRef = useRef(0)
   const gitReqIdRef = useRef(0)
+  const prReqIdRef = useRef(0)
+  const highlightTimerRef = useRef<number | null>(null)
   const catalogRequests = useRef<Partial<Record<HarnessId, number>>>({})
   const settingsReturnFocus = useRef<HTMLElement | null>(null)
   const sendMenuRef = useRef<HTMLDetailsElement>(null)
@@ -255,6 +263,45 @@ export function App() {
     () => threads.find((t) => t.id === activeThreadId) ?? null,
     [threads, activeThreadId],
   )
+  const splitThread = useMemo(
+    () => (splitThreadId && splitThreadId !== activeThreadId ? threads.find((t) => t.id === splitThreadId) ?? null : null),
+    [threads, splitThreadId, activeThreadId],
+  )
+  const splitTimeline = (splitThread && timelines[splitThread.id]) || EMPTY_TIMELINE
+  const pendingForSplit = useMemo(
+    () => (splitThread ? pendingUiQueue.filter((req) => req.threadId === splitThread.id) : []),
+    [pendingUiQueue, splitThread],
+  )
+  const canSplit = threads.some((t) => t.id !== activeThreadId)
+
+  function toggleSplitView() {
+    if (splitThread) {
+      setSplitThreadId(null)
+      return
+    }
+    const candidate = threads.find((t) => t.id !== activeThreadId)
+    if (candidate) setSplitThreadId(candidate.id)
+  }
+
+  function openInSplit(threadId: string) {
+    if (threadId === activeThreadId) return
+    setSplitThreadId(threadId)
+  }
+
+  function swapSplitThreads() {
+    if (!splitThread) return
+    const prevPrimary = activeThreadId
+    const nextPrimary = splitThread.id
+    selectThread(nextPrimary)
+    setSplitThreadId(prevPrimary && prevPrimary !== nextPrimary ? prevPrimary : null)
+  }
+
+  function promoteSplitThread() {
+    if (!splitThread) return
+    const target = splitThread.id
+    setSplitThreadId(null)
+    selectThread(target)
+  }
 
   const activeProject = useMemo(
     () => projects.find((p) => p.id === (activeThread?.projectId ?? activeProjectId)) ?? null,
@@ -276,7 +323,9 @@ export function App() {
   const selectedDraftModel = draftModel?.harness === effectiveHarness ? draftModel.value : undefined
   const selectedDraftThinking = draftThinking?.harness === effectiveHarness ? draftThinking.value : undefined
   const activeTimeline = (activeThread && timelines[activeThread.id]) || EMPTY_TIMELINE
+  const turnEntries = useMemo(() => buildTurnNavEntries(activeTimeline), [activeTimeline])
   const gitStatus = gitSnapshot?.cwd === effectiveCwd ? gitSnapshot.status : null
+  const linkedPr = linkedPrSnapshot?.cwd === effectiveCwd ? linkedPrSnapshot.pr : null
   const pendingForThread = pendingUiQueue.filter((request) => request.threadId === activeThreadId)
   const activePendingUi = pendingForThread[0]
 
@@ -316,6 +365,38 @@ export function App() {
     const status = await window.agentui.gitGetStatus(cwd).catch(() => null)
     if (requestId === gitReqIdRef.current) setGitSnapshot({ cwd, status })
   }, [])
+
+  const refreshLinkedPr = useCallback(async (cwd?: string, refresh = false) => {
+    const requestId = ++prReqIdRef.current
+    if (!cwd) {
+      setLinkedPrSnapshot(null)
+      return
+    }
+    const pr = await window.agentui.gitGetLinkedPr(cwd, refresh).catch(() => null)
+    if (requestId === prReqIdRef.current) setLinkedPrSnapshot({ cwd, pr })
+  }, [])
+
+  useEffect(() => {
+    if (!effectiveCwd || !gitStatus?.isRepo || !gitStatus.ghAvailable) {
+      setLinkedPrSnapshot(effectiveCwd ? { cwd: effectiveCwd, pr: null } : null)
+      return
+    }
+    void refreshLinkedPr(effectiveCwd, false)
+  }, [effectiveCwd, gitStatus?.isRepo, gitStatus?.branch, gitStatus?.ghAvailable, refreshLinkedPr])
+
+  const jumpToTimelineIndex = useCallback(
+    (index: number) => {
+      stickToBottomRef.current = false
+      timelineVirtualizer.scrollToIndex(index, { align: 'start' })
+      setHighlightedRowIndex(index)
+      if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current)
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightedRowIndex(null)
+        highlightTimerRef.current = null
+      }, 1_400)
+    },
+    [timelineVirtualizer],
+  )
 
   useEffect(() => {
     try {
@@ -394,6 +475,15 @@ export function App() {
   }, [activeThread?.id])
 
   useEffect(() => {
+    if (splitThread && !timelines[splitThread.id]) {
+      const targetId = splitThread.id
+      void window.agentui.getThreadTimeline(targetId).then((items) => {
+        setTimelines((prev) => ((prev[targetId]?.length ?? 0) > 0 ? prev : { ...prev, [targetId]: items }))
+      })
+    }
+  }, [splitThread?.id])
+
+  useEffect(() => {
     void refreshGit(effectiveCwd ?? undefined)
   }, [effectiveCwd, refreshGit])
 
@@ -468,16 +558,16 @@ export function App() {
   useEffect(() => {
     return window.agentui.onShareToComposer((event: ShareToComposerEvent) => {
       selectThread(event.threadId)
-      if (event.kind === 'image') {
-        if (!event.imageData || !event.mimeType) return
+      const attachSharedImage = (): boolean => {
+        if (!event.imageData || !event.mimeType) return false
         if ((composerDrafts.get(event.threadId)?.images.length ?? 0) >= MAX_IMAGES_PER_PROMPT) {
           setActionError(`分享失败：单条消息最多附加 ${MAX_IMAGES_PER_PROMPT} 张图片`)
-          return
+          return false
         }
         const sizeBytes = Math.floor(event.imageData.length * 0.75) - (event.imageData.match(/=+$/)?.[0].length ?? 0)
         if (sizeBytes > MAX_IMAGE_BYTES) {
           setActionError('分享失败：截图超过 10MB 限制')
-          return
+          return false
         }
         const stamp = new Date().toLocaleTimeString().replace(/:/g, '')
         const shared: ImageAttachment = {
@@ -485,25 +575,49 @@ export function App() {
           type: 'image' as const,
           data: event.imageData,
           mimeType: event.mimeType,
-          name: `shared-${stamp}.png`,
+          name: event.kind === 'annotation' ? `element-${stamp}.png` : `shared-${stamp}.png`,
           sizeBytes,
         }
         updateComposerDraft(event.threadId, (draft) => ({
           ...draft,
           images: [...draft.images, shared].slice(0, MAX_IMAGES_PER_PROMPT),
         }))
-      } else {
-        const text = event.kind === 'link'
-          ? `[${event.title || event.url}](${event.url})`
-          : `${event.text ?? ''}\n\n（来自网页：${event.fromUrl ?? ''}）`
-        updateComposerDraft(event.threadId, (draft) => ({ ...draft, text: draft.text ? `${draft.text}\n\n${text}` : text }))
+        return true
+      }
+
+      if (event.kind === 'image') {
+        attachSharedImage()
+        return
+      }
+
+      if (event.kind === 'annotation') {
+        attachSharedImage()
+        const text = (event.text ?? '').trim()
+        if (text) {
+          updateComposerDraft(event.threadId, (draft) => ({
+            ...draft,
+            text: draft.text ? `${draft.text}\n\n${text}` : text,
+          }))
+        }
         requestAnimationFrame(() => {
           const end = composerRef.current?.value.length ?? 0
           setComposerCursor(end)
           composerRef.current?.setSelectionRange(end, end)
           composerRef.current?.focus()
         })
+        return
       }
+
+      const text = event.kind === 'link'
+        ? `[${event.title || event.url}](${event.url})`
+        : `${event.text ?? ''}\n\n（来自网页：${event.fromUrl ?? ''}）`
+      updateComposerDraft(event.threadId, (draft) => ({ ...draft, text: draft.text ? `${draft.text}\n\n${text}` : text }))
+      requestAnimationFrame(() => {
+        const end = composerRef.current?.value.length ?? 0
+        setComposerCursor(end)
+        composerRef.current?.setSelectionRange(end, end)
+        composerRef.current?.focus()
+      })
     })
   }, [composerDrafts, selectThread, updateComposerDraft])
 
@@ -662,6 +776,20 @@ export function App() {
     })
   }
 
+  /** Diff 逐行批注回贴：按段落追加到当前会话输入框并聚焦。 */
+  function appendBlockToComposer(block: string) {
+    setPromptText((prev) => {
+      const base = prev.trimEnd()
+      return base ? `${base}\n\n${block}\n` : `${block}\n`
+    })
+    requestAnimationFrame(() => {
+      const end = composerRef.current?.value.length ?? 0
+      setComposerCursor(end)
+      composerRef.current?.setSelectionRange(end, end)
+      composerRef.current?.focus()
+    })
+  }
+
   function closeSettings() {
     setShowSettings(false)
     requestAnimationFrame(() => {
@@ -727,6 +855,11 @@ export function App() {
 
   async function saveProjectTrust(projectId: string, preset: TrustPreset) {
     const updated = await window.agentui.setProjectTrust(projectId, preset)
+    setProjects((prev) => prev.map((project) => project.id === updated.id ? updated : project))
+  }
+
+  async function saveProjectRules(projectId: string, rules: ToolPermissionRule[]) {
+    const updated = await window.agentui.setProjectRules(projectId, rules)
     setProjects((prev) => prev.map((project) => project.id === updated.id ? updated : project))
   }
 
@@ -1277,7 +1410,14 @@ export function App() {
         </button>
       )
     }
-    return <AssistantMessage item={item} codeFontSize={appearance.codeFontSize} collapseToolGroups={conversation.collapseToolGroups} />
+    return (
+      <AssistantMessage
+        item={item}
+        codeFontSize={appearance.codeFontSize}
+        collapseToolGroups={conversation.collapseToolGroups}
+        cwd={activeThread?.cwd ?? effectiveCwd}
+      />
+    )
   }
 
   return (
@@ -1287,6 +1427,17 @@ export function App() {
         thread={activeThread} harness={effectiveHarness} ready={harnesses[effectiveHarness]?.ready ?? false}
         cwd={effectiveCwd} context={currentCtxUsage} statusText={currentStatusText}
         activeTool={showDiffPanel ? diffPanelTab : null} terminalDocked={terminalDocked}
+        linkedPr={linkedPr}
+        turns={turnEntries}
+        splitOpen={Boolean(splitThread)}
+        canSplit={canSplit}
+        onToggleSplit={toggleSplitView}
+        onJumpToTurn={jumpToTimelineIndex}
+        onOpenTurnDiff={(summaryId) => {
+          if (!activeThreadId) return
+          openWorkspaceTab('changes')
+          setSelectedTurn({ threadId: activeThreadId, summaryId })
+        }}
         onToggleTool={toggleWorkspaceTool} onOpenPalette={() => setShowPalette(true)}
         onOpenBrowserWindow={() => void openBrowserWindow()}
         onCloseSettings={showSettings ? closeSettings : undefined}
@@ -1303,6 +1454,8 @@ export function App() {
           threads={threads}
           activeProjectId={activeProject?.id ?? null}
           activeThreadId={activeThreadId}
+          splitThreadId={splitThread?.id ?? null}
+          pendingUiQueue={pendingUiQueue}
           cliSessions={cliSessions}
           onSelectHarness={(id) => void handleSwitchComposerHarness(id)}
           onRefreshHarnesses={() => void refreshHarnessSettings().catch(reportError)}
@@ -1321,6 +1474,7 @@ export function App() {
                 setComposerDrafts((drafts) => new Map([...drafts].filter(([threadId]) => threadId === null || !removedIds.has(threadId))))
                 setPendingUiQueue((prev) => prev.filter((item) => !removedIds.has(item.threadId)))
                 if (activeThreadId && removedIds.has(activeThreadId)) setActiveThreadId(null)
+                if (splitThreadId && removedIds.has(splitThreadId)) setSplitThreadId(null)
                 if (activeProjectId === id) setActiveProjectId(projects.find((project) => project.id !== id)?.id ?? null)
               })
               .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
@@ -1328,6 +1482,7 @@ export function App() {
           onNewThread={(pid, harness) => void handleNewThread(pid, harness)}
           onOpenTrust={(pid) => setTrustProjectId(pid)}
           onSelectThread={selectThread}
+          onOpenInSplit={openInSplit}
           onDeleteThread={(tid) =>
             void window.agentui
               .deleteThread(tid)
@@ -1336,6 +1491,7 @@ export function App() {
                 updateComposerDraft(tid, () => EMPTY_COMPOSER_DRAFT)
                 setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, tid))
                 if (activeThreadId === tid) setActiveThreadId(null)
+                if (splitThreadId === tid) setSplitThreadId(null)
               })
               .catch((e) => setActionError(e instanceof Error ? e.message : String(e)))
           }
@@ -1355,7 +1511,8 @@ export function App() {
           className={`work-area${showDiffPanel ? ' panel-open' : ''}${terminalDocked ? ' has-terminal-dock' : ''}${panelResizing ? ' is-resizing' : ''}`}
           style={{ '--panel-width': `${currentPanelWidth}px` } as CSSProperties}
         >
-          <main className="main-pane">
+          <main className={`main-pane${splitThread ? ' is-split' : ''}`}>
+            <div className="main-pane-primary">
             {showDisconnectBanner && activeThread && disconnectReason && (
               <section className={`disconnect-banner${activeThread.status === 'error' ? ' is-error' : ''}`} aria-label="连接状态">
                 <div className="disconnect-banner-top">
@@ -1407,7 +1564,8 @@ export function App() {
                         if (!item) return null
                         return (
                           <div key={virtualItem.key} data-index={virtualItem.index} ref={timelineVirtualizer.measureElement}
-                            className="timeline-row" style={{ transform: `translateY(${virtualItem.start}px)` }}>
+                            className={`timeline-row${highlightedRowIndex === virtualItem.index ? ' is-jump-highlight' : ''}`}
+                            style={{ transform: `translateY(${virtualItem.start}px)` }}>
                             {renderTimelineItem(item)}
                           </div>
                         )
@@ -1418,6 +1576,32 @@ export function App() {
                         queueLength={pendingForThread.length}
                         onRespond={async (response) => {
                           await window.agentui.respondExtensionUi(activePendingUi.threadId, response)
+                          setPendingUiQueue((prev) => dequeueUiRequest(prev, activePendingUi.id))
+                        }}
+                        onAllowAndRemember={async (scope, rule, allowResponse) => {
+                          if (scope === 'session') {
+                            await window.agentui.addThreadSessionRule(activePendingUi.threadId, {
+                              action: 'allow',
+                              target: rule.target,
+                              pattern: rule.pattern,
+                              note: '审批卡片记住（本会话）',
+                            })
+                          } else {
+                            const ownerThread = threads.find((t) => t.id === activePendingUi.threadId)
+                            const ownerProj = ownerThread ? projects.find((p) => p.id === ownerThread.projectId) : activeProject
+                            if (ownerProj) {
+                              const nextRule: ToolPermissionRule = {
+                                id: `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                                action: 'allow',
+                                target: rule.target,
+                                pattern: rule.pattern,
+                                note: '审批卡片添加',
+                                createdAt: Date.now(),
+                              }
+                              await saveProjectRules(ownerProj.id, [...(ownerProj.permissionRules ?? []), nextRule])
+                            }
+                          }
+                          await window.agentui.respondExtensionUi(activePendingUi.threadId, allowResponse)
                           setPendingUiQueue((prev) => dequeueUiRequest(prev, activePendingUi.id))
                         }}
                       />
@@ -1691,6 +1875,64 @@ export function App() {
                 </div>}
               </section>}
             </div>
+            </div>
+            {splitThread && (
+              <SplitThreadPane
+                thread={splitThread}
+                allThreads={threads}
+                activeThreadId={activeThreadId}
+                timeline={splitTimeline}
+                pendingUi={pendingForSplit}
+                codeFontSize={appearance.codeFontSize}
+                collapseToolGroups={conversation.collapseToolGroups}
+                onSelectSplitThread={(tid) => setSplitThreadId(tid)}
+                onSwapWithPrimary={swapSplitThreads}
+                onPromoteToPrimary={promoteSplitThread}
+                onClose={() => setSplitThreadId(null)}
+                onSendPrompt={async (tid, message) => {
+                  const target = threads.find((t) => t.id === tid)
+                  const behavior =
+                    target && (target.status === 'streaming' || target.status === 'starting')
+                      ? conversation.enterWhileRunning
+                      : undefined
+                  await window.agentui.sendPrompt({ threadId: tid, message, streamingBehavior: behavior })
+                }}
+                onAbort={async (tid) => {
+                  await window.agentui.abortThread(tid)
+                  setPendingUiQueue((prev) => pruneUiRequestsForThread(prev, tid))
+                }}
+                onRespondUi={async (tid, resp, reqId) => {
+                  await window.agentui.respondExtensionUi(tid, resp)
+                  setPendingUiQueue((prev) => dequeueUiRequest(prev, reqId))
+                }}
+                onAllowAndRemember={async (tid, scope, rule, allowResponse, reqId) => {
+                  if (scope === 'session') {
+                    await window.agentui.addThreadSessionRule(tid, {
+                      action: 'allow',
+                      target: rule.target,
+                      pattern: rule.pattern,
+                      note: '审批卡片记住（本会话）',
+                    })
+                  } else {
+                    const ownerThread = threads.find((t) => t.id === tid)
+                    const ownerProj = ownerThread ? projects.find((p) => p.id === ownerThread.projectId) : null
+                    if (ownerProj) {
+                      const nextRule: ToolPermissionRule = {
+                        id: `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                        action: 'allow',
+                        target: rule.target,
+                        pattern: rule.pattern,
+                        note: '审批卡片添加',
+                        createdAt: Date.now(),
+                      }
+                      await saveProjectRules(ownerProj.id, [...(ownerProj.permissionRules ?? []), nextRule])
+                    }
+                  }
+                  await window.agentui.respondExtensionUi(tid, allowResponse)
+                  setPendingUiQueue((prev) => dequeueUiRequest(prev, reqId))
+                }}
+              />
+            )}
           </main>
 
           <div className="workspace-side" id="workspace-panel" inert={!showDiffPanel} aria-hidden={!showDiffPanel}>
@@ -1698,6 +1940,8 @@ export function App() {
               cwd={effectiveCwd ?? ''}
               repoRoot={gitStatus?.repoRoot}
               status={gitStatus}
+              linkedPr={linkedPr}
+              activeHarness={effectiveHarness}
               activeTab={diffPanelTab}
               selectedTurn={selectedTurn?.threadId === activeThreadId ? selectedTurn : null}
               onShowWorkingDiff={() => setSelectedTurn(null)}
@@ -1706,7 +1950,9 @@ export function App() {
               onDockTerminal={dockTerminal}
               onTabChange={openWorkspaceTab}
               onRefresh={() => void refreshGit(effectiveCwd ?? undefined)}
+              onRefreshPr={() => void refreshLinkedPr(effectiveCwd ?? undefined, true)}
               onClose={() => setShowDiffPanel(false)}
+              onInsertDiffComment={appendBlockToComposer}
               onCreateWorktreeThread={async (branchName, baseRef) => {
                 if (!activeProject) return
                 const wt = await window.agentui.gitCreateWorktree(activeProject.path, branchName, baseRef)
@@ -1817,7 +2063,8 @@ export function App() {
           onInsertToComposer={insertToComposer} onOpenBrowserWindow={openBrowserWindow}
           onNavigate={setSettingsDestination} onSavePath={saveEnginePath} onRefreshHarnesses={refreshHarnessSettings}
           onRefreshCatalog={(id) => loadModelCatalog(id, true)} onSaveDefaults={saveHarnessDefaults} onSaveAppearance={saveAppearance}
-          onSaveConversation={saveConversation} onSaveProjectTrust={saveProjectTrust} onSaveDefaultProjectTrust={saveDefaultProjectTrust} />
+          onSaveConversation={saveConversation} onSaveProjectTrust={saveProjectTrust}
+          onSaveProjectRules={saveProjectRules} onSaveDefaultProjectTrust={saveDefaultProjectTrust} />
       )}
 
       {showShortcuts && <ShortcutsModal enterWhileRunning={conversation.enterWhileRunning} onClose={() => setShowShortcuts(false)} />}

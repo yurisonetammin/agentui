@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, ShieldAlert } from 'lucide-react'
+import { AlertCircle, Plus, ShieldAlert, ShieldCheck } from 'lucide-react'
 import type { ExtensionUiRequest, ExtensionUiResponse } from '@shared/types'
-import { TRUST_PRESET_LABELS } from '@shared/tool-policy'
+import {
+  pickSelectOption,
+  TRUST_PRESET_LABELS,
+  type PermissionRuleTarget,
+} from '@shared/tool-policy'
 
 const PERSISTENT_OPTION = /always|永久|始终|总是|don.?t ask|\ball\b/i
 
@@ -9,10 +13,16 @@ export function ExtensionUiCard({
   request,
   queueLength = 1,
   onRespond,
+  onAllowAndRemember,
 }: {
   request: ExtensionUiRequest
   queueLength?: number
   onRespond: (resp: ExtensionUiResponse) => Promise<void>
+  onAllowAndRemember?: (
+    scope: 'session' | 'project',
+    rule: { target: PermissionRuleTarget; pattern: string },
+    allowResponse: ExtensionUiResponse,
+  ) => Promise<void>
 }) {
   const [text, setText] = useState(request.prefill ?? '')
   const [busy, setBusy] = useState(false)
@@ -35,6 +45,30 @@ export function ExtensionUiCard({
     setError(null)
     try {
       await onRespond(response)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const allowOnceResponse: ExtensionUiResponse | null =
+    request.method === 'confirm'
+      ? { id: request.id, confirmed: true }
+      : request.method === 'select'
+        ? (() => {
+            const picked = pickSelectOption(request.options ?? [], true)
+            return picked ? { id: request.id, value: picked } : null
+          })()
+        : null
+  const canRemember = Boolean(!isHighRisk && request.suggestedRule && allowOnceResponse && onAllowAndRemember)
+
+  async function rememberAndAllow(scope: 'session' | 'project') {
+    if (!request.suggestedRule || !allowOnceResponse || !onAllowAndRemember) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onAllowAndRemember(scope, request.suggestedRule, allowOnceResponse)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -106,6 +140,31 @@ export function ExtensionUiCard({
           data-autofocus
           onChange={(e) => setText(e.target.value)}
         />
+      )}
+
+      {canRemember && request.suggestedRule && (
+        <div className="approval-remember-bar">
+          <button
+            type="button"
+            className="btn-small"
+            disabled={busy}
+            title={`仅在当前会话记住允许 ${request.suggestedRule.pattern}（高风险命令仍会强制询问）`}
+            onClick={() => void rememberAndAllow('session')}
+          >
+            <ShieldCheck size={12} />
+            本会话允许 <code>{request.suggestedRule.pattern}</code>
+          </button>
+          <button
+            type="button"
+            className="btn-small"
+            disabled={busy}
+            title={`将 ${request.suggestedRule.pattern} 写入此项目的长期允许规则（可在设置 → 项目与权限管理）`}
+            onClick={() => void rememberAndAllow('project')}
+          >
+            <Plus size={12} />
+            加入项目允许规则
+          </button>
+        </div>
       )}
 
       <div className="approval-actions">

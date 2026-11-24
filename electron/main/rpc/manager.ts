@@ -1,21 +1,33 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { StartupIssue } from '@shared/diagnostics'
 import { BUILTIN_SLASH_COMMANDS } from '@shared/composer-autocomplete'
 import { applyRpcEventToTimeline } from '@shared/event-reducer'
 import {
   assessToolRequest,
   decideApproval,
+  deriveCommandPrefixPattern,
+  extractToolName,
+  isPermissionRuleAction,
+  isPermissionRuleTarget,
+  matchPermissionRules,
   pickSelectOption,
   TRUST_PRESET_LABELS,
+  type PermissionRuleTarget,
+  type ToolPermissionRule,
   type TrustPreset,
 } from '@shared/tool-policy'
 import {
+  HARNESS_IDS,
   HARNESS_LABELS,
   type ContextUsageInfo,
   type ExtensionUiRequest,
   type ExtensionUiResponse,
   type ForkThreadInput,
   type ForkThreadResult,
+  type HarnessId,
   type RuntimeDisconnectInfo,
   type SendPromptInput,
   type SessionForkMessage,
@@ -52,6 +64,7 @@ export class RuntimeManager {
   private readonly gitTurns = new Map<string, Promise<GitTurnCapture | null>>()
   private readonly turnDiffs = new Map<string, { threadId: string; diff: string }>()
   private readonly finalizingTurns = new Set<Promise<void>>()
+  private readonly sessionRules = new Map<string, ToolPermissionRule[]>()
 
   constructor(
     private readonly store: StateStore,
@@ -498,10 +511,327 @@ export class RuntimeManager {
     return { hasLiveSession: false, startedAt: null }
   }
 
+  addSessionRule(
+    threadId: string,
+    input: Omit<ToolPermissionRule, 'id' | 'createdAt'>,
+  ): ToolPermissionRule[] {
+    if (!isPermissionRuleAction(input.action) || !isPermissionRuleTarget(input.target)) {
+      throw new Error('无效的会话权限规则')
+    }
+    const pattern = input.pattern.trim()
+    if (!pattern || pattern.length > 200) throw new Error('规则模式不能为空且不超过 200 字符')
+    const current = this.sessionRules.get(threadId) ?? []
+    const dup = current.some(
+      (r) =>
+        r.action === input.action &&
+        r.target === input.target &&
+        r.pattern.toLowerCase() === pattern.toLowerCase(),
+    )
+    if (dup) return structuredClone(current)
+    const next: ToolPermissionRule[] = [
+      ...current,
+      {
+        id: `sess-${randomUUID().slice(0, 8)}`,
+        action: input.action,
+        target: input.target,
+        pattern,
+        note: input.note?.trim() || '本会话记住',
+        createdAt: Date.now(),
+      },
+    ]
+    this.sessionRules.set(threadId, next)
+    return structuredClone(next)
+  }
+
+  getSessionRules(threadId: string): ToolPermissionRule[] {
+    return structuredClone(this.sessionRules.get(threadId) ?? [])
+  }
+
+  clearSessionRules(threadId: string): void {
+    this.sessionRules.delete(threadId)
+  }
+
+  /**
+   * Run a short, side-effect-free one-shot prompt against an ephemeral RPC runtime
+   * (e.g. for generating a Git commit message) without mutating any user thread or
+   * leaving behind a stray CLI session file.
+   */
+  async generateOneShotText(prompt: string, preferredHarness?: HarnessId, timeoutMs = 20_000): Promise<string | null> {
+    const snapshot = this.discovery.snapshot()
+    const order: HarnessId[] = [
+      ...(preferredHarness ? [preferredHarness] : []),
+      ...HARNESS_IDS.filter((id) => id !== preferredHarness),
+    ]
+    const target = order.find((id) => snapshot[id]?.ready && snapshot[id]?.path)
+    if (!target) return null
+    const status = snapshot[target]
+    if (!status.path) return null
+
+    const tempCwd = mkdtempSync(join(tmpdir(), 'agentui-oneshot-'))
+    let createdSessionFile: string | null = null
+    let timeline: TimelineItem[] = []
+    let runtime: RpcRuntime | null = null
+
+    try {
+      const adapter = selectHarnessRpcAdapter(
+        target,
+        target === 'prime' ? status.implementation : undefined,
+      )
+      const thinkingLevel: ThinkingLevel = 'off'
+      const args = adapter.buildStartArgs({
+        cwd: tempCwd,
+        thinkingLevel,
+        executablePath: status.path,
+      })
+
+      let resolveDone: (() => void) | null = null
+      let rejectDone: ((err: Error) => void) | null = null
+      const donePromise = new Promise<void>((res, rej) => {
+        resolveDone = res
+        rejectDone = rej
+      })
+
+      const childEnv =
+        target === 'omp'
+          ? harnessChildEnvironment('omp', status.agentDir)
+          : target === 'prime'
+            ? harnessChildEnvironment('prime', status.agentDir, { PRIME_AGENT_TELEMETRY: '0' })
+            : target === 'claude'
+              ? harnessChildEnvironment('claude', status.agentDir, {
+                  MAX_THINKING_TOKENS: String(CLAUDE_THINKING_TOKENS.off),
+                })
+              : harnessChildEnvironment(target, status.agentDir)
+
+      runtime = new RpcRuntime(
+        `oneshot-${randomUUID().slice(0, 8)}`,
+        status.path,
+        args,
+        tempCwd,
+        adapter,
+        {
+          onEvent: (event) => {
+            timeline = applyRpcEventToTimeline(timeline, event)
+            const t = String(event.type ?? '')
+            if (t === 'agent_end' || t === 'agent_settled') resolveDone?.()
+            else if (t === 'error') rejectDone?.(new Error(String(event.error ?? 'one-shot error')))
+          },
+          onStateChange: (patch) => {
+            if (patch.sessionFile && !/^(codex|acp|dsh):/.test(patch.sessionFile)) {
+              createdSessionFile = patch.sessionFile
+            }
+          },
+          onExtensionUiRequest: (req) => {
+            if (req.dismissed || !runtime) return
+            void runtime
+              .respondExtensionUi({ id: req.id, confirmed: false, cancelled: true })
+              .catch(() => undefined)
+          },
+          onExit: () => {
+            resolveDone?.()
+          },
+        },
+        childEnv,
+        adapter.createBridge
+          ? {
+              cwd: tempCwd,
+              thinkingLevel,
+              executablePath: status.path,
+              getTrustPreset: () => 'readonly',
+            }
+          : undefined,
+      )
+
+      const timer = setTimeout(() => rejectDone?.(new Error('AI 生成超时')), timeoutMs)
+      timer.unref()
+      try {
+        await runtime.handshake()
+        await runtime.sendCommand({ type: 'prompt', message: prompt }, Math.min(timeoutMs, 15_000))
+        await donePromise
+      } finally {
+        clearTimeout(timer)
+      }
+
+      for (let i = timeline.length - 1; i >= 0; i -= 1) {
+        const item = timeline[i]
+        if (item.role !== 'assistant') continue
+        const text = item.parts
+          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+          .map((p) => p.text)
+          .join('\n')
+          .trim()
+        if (text) return text
+      }
+      return null
+    } catch {
+      return null
+    } finally {
+      if (runtime) await runtime.stop().catch(() => undefined)
+      try { rmSync(tempCwd, { recursive: true, force: true }) } catch { /* ignore */ }
+      if (createdSessionFile) {
+        try { rmSync(createdSessionFile, { force: true }) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /**
+   * Execute a scheduled background task inside `cwd` using the chosen engine/model
+   * and trust preset. Unattended runs auto-allow only operations permitted by
+   * `decideApproval` and auto-deny anything requiring interactive confirmation
+   * or flagged as high risk so background jobs never stall or bypass safety.
+   */
+  async runScheduledPrompt(input: {
+    cwd: string
+    harness: HarnessId
+    modelProvider?: string | null
+    modelId?: string | null
+    trustPreset: TrustPreset
+    projectRules?: readonly ToolPermissionRule[]
+    prompt: string
+    timeoutMs?: number
+  }): Promise<{ summary: string }> {
+    const status = this.discovery.snapshot()[input.harness]
+    if (!status?.ready || !status.path) {
+      throw new Error(`引擎 ${input.harness} 未就绪，无法执行定时任务`)
+    }
+    const timeoutMs = input.timeoutMs ?? 120_000
+    let createdSessionFile: string | null = null
+    let timeline: TimelineItem[] = []
+    let runtime: RpcRuntime | null = null
+
+    try {
+      const adapter = selectHarnessRpcAdapter(
+        input.harness,
+        input.harness === 'prime' ? status.implementation : undefined,
+      )
+      const thinkingLevel: ThinkingLevel = 'medium'
+      const args = adapter.buildStartArgs({
+        cwd: input.cwd,
+        providerId: input.modelProvider ?? undefined,
+        modelId: input.modelId ?? undefined,
+        thinkingLevel,
+        executablePath: status.path,
+      })
+
+      let resolveDone: (() => void) | null = null
+      let rejectDone: ((err: Error) => void) | null = null
+      const donePromise = new Promise<void>((res, rej) => {
+        resolveDone = res
+        rejectDone = rej
+      })
+
+      const childEnv =
+        input.harness === 'omp'
+          ? harnessChildEnvironment('omp', status.agentDir)
+          : input.harness === 'prime'
+            ? harnessChildEnvironment('prime', status.agentDir, { PRIME_AGENT_TELEMETRY: '0' })
+            : input.harness === 'claude'
+              ? harnessChildEnvironment('claude', status.agentDir, {
+                  MAX_THINKING_TOKENS: String(CLAUDE_THINKING_TOKENS[thinkingLevel]),
+                })
+              : harnessChildEnvironment(input.harness, status.agentDir)
+
+      runtime = new RpcRuntime(
+        `sched-${randomUUID().slice(0, 8)}`,
+        status.path,
+        args,
+        input.cwd,
+        adapter,
+        {
+          onEvent: (event) => {
+            timeline = applyRpcEventToTimeline(timeline, event)
+            const t = String(event.type ?? '')
+            if (t === 'agent_end' || t === 'agent_settled') resolveDone?.()
+            else if (t === 'error') rejectDone?.(new Error(String(event.error ?? 'scheduled run error')))
+          },
+          onStateChange: (patch) => {
+            if (patch.sessionFile && !/^(codex|acp|dsh):/.test(patch.sessionFile)) {
+              createdSessionFile = patch.sessionFile
+            }
+          },
+          onExtensionUiRequest: (req) => {
+            if (req.dismissed || !runtime) return
+            const assessment = assessToolRequest(req)
+            const matchedRule = matchPermissionRules(input.projectRules ?? [], {
+              title: req.title,
+              message: req.message,
+              command: assessment.command,
+            })
+            const decision = decideApproval(input.trustPreset, assessment, matchedRule)
+            if (decision.action === 'allow' && (req.method === 'confirm' || req.method === 'select')) {
+              const resp: ExtensionUiResponse =
+                req.method === 'confirm'
+                  ? { id: req.id, confirmed: true }
+                  : { id: req.id, value: pickSelectOption(req.options ?? [], true) ?? undefined }
+              if (req.method === 'confirm' || resp.value !== undefined) {
+                void runtime.respondExtensionUi(resp).catch(() => undefined)
+                return
+              }
+            }
+            const denyResp: ExtensionUiResponse =
+              req.method === 'select'
+                ? (() => {
+                    const opt = pickSelectOption(req.options ?? [], false)
+                    return opt ? { id: req.id, value: opt } : { id: req.id, cancelled: true }
+                  })()
+                : { id: req.id, confirmed: false, cancelled: true }
+            void runtime.respondExtensionUi(denyResp).catch(() => undefined)
+          },
+          onExit: (info) => {
+            if (info.code && info.code !== 0) {
+              rejectDone?.(new Error(`引擎进程退出 (${info.code})`))
+            } else {
+              resolveDone?.()
+            }
+          },
+        },
+        childEnv,
+        adapter.createBridge
+          ? {
+              cwd: input.cwd,
+              providerId: input.modelProvider ?? undefined,
+              modelId: input.modelId ?? undefined,
+              thinkingLevel,
+              executablePath: status.path,
+              getTrustPreset: () => input.trustPreset,
+            }
+          : undefined,
+      )
+
+      const timer = setTimeout(() => rejectDone?.(new Error(`定时任务执行超时 (${Math.round(timeoutMs / 1000)}s)`)), timeoutMs)
+      timer.unref()
+      try {
+        await runtime.handshake()
+        await runtime.sendCommand({ type: 'prompt', message: input.prompt }, Math.min(timeoutMs, 20_000))
+        await donePromise
+      } finally {
+        clearTimeout(timer)
+      }
+
+      for (let i = timeline.length - 1; i >= 0; i -= 1) {
+        const item = timeline[i]
+        if (item.role !== 'assistant') continue
+        if (item.errorMessage) throw new Error(item.errorMessage)
+        const text = item.parts
+          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+          .map((p) => p.text)
+          .join('\n')
+          .trim()
+        if (text) return { summary: text.slice(0, 1_500) }
+      }
+      return { summary: '执行完成（无文本输出）' }
+    } finally {
+      if (runtime) await runtime.stop().catch(() => undefined)
+      if (createdSessionFile) {
+        try { rmSync(createdSessionFile, { force: true }) } catch { /* ignore */ }
+      }
+    }
+  }
+
   async removeThread(threadId: string): Promise<void> {
     await this.stopThread(threadId)
     this.timelines.delete(threadId)
     this.lastPrompts.delete(threadId)
+    this.sessionRules.delete(threadId)
     for (const [summaryId, record] of this.turnDiffs) {
       if (record.threadId === threadId) this.turnDiffs.delete(summaryId)
     }
@@ -510,6 +840,7 @@ export class RuntimeManager {
   async stopAll(): Promise<void> {
     const list = [...this.runtimes.values()]
     this.runtimes.clear()
+    this.sessionRules.clear()
     await Promise.allSettled([
       ...list.map((r) => r.stop()),
       ...Array.from(this.gitTurns.keys(), (threadId) => this.discardGitTurn(threadId)),
@@ -555,6 +886,20 @@ export class RuntimeManager {
     const assessment = assessToolRequest(req)
     const risk = { level: assessment.level, reasons: assessment.reasons, command: assessment.command }
 
+    // Derive a safe one-click "remember in session / project" rule suggestion for non-high-risk approvals.
+    let suggestedRule: { target: PermissionRuleTarget; pattern: string } | null = null
+    if (assessment.level !== 'high') {
+      const cmdPrefix = deriveCommandPrefixPattern(assessment.command)
+      if (cmdPrefix) {
+        suggestedRule = { target: 'command', pattern: cmdPrefix }
+      } else {
+        const extractedTool = extractToolName(req.title)
+        if (extractedTool && /^[A-Za-z_][\w./-]{1,40}$/.test(extractedTool) && extractedTool !== req.title) {
+          suggestedRule = { target: 'tool', pattern: extractedTool }
+        }
+      }
+    }
+
     if (req.method === 'select') {
       const opts = req.options ?? []
       // Only treat select as an approval prompt when it offers recognisable allow/deny options;
@@ -567,10 +912,19 @@ export class RuntimeManager {
       }
     }
 
-    const decision = decideApproval(preset, assessment)
+    const combinedRules = [
+      ...(project?.permissionRules ?? []),
+      ...(this.sessionRules.get(threadId) ?? []),
+    ]
+    const matchedRule = matchPermissionRules(combinedRules, {
+      title: req.title,
+      message: req.message,
+      command: assessment.command,
+    })
+    const decision = decideApproval(preset, assessment, matchedRule)
 
     if (decision.action === 'ask') {
-      forwardToUser({ ...req, policyPreset: preset, risk })
+      forwardToUser({ ...req, policyPreset: preset, risk, suggestedRule })
       return
     }
 
@@ -582,7 +936,7 @@ export class RuntimeManager {
       const value = pickSelectOption(req.options ?? [], allow)
       if (value === undefined && allow) {
         // No unambiguous one-time allow option: let the human decide.
-        forwardToUser({ ...req, policyPreset: preset, risk })
+        forwardToUser({ ...req, policyPreset: preset, risk, suggestedRule })
         return
       }
       response = value !== undefined ? { id: req.id, value } : { id: req.id, cancelled: true }
@@ -601,7 +955,7 @@ export class RuntimeManager {
       })
       .catch(() => {
         // Auto-response failed (e.g. process died) — fall back to asking the user.
-        forwardToUser({ ...req, policyPreset: preset, risk })
+        forwardToUser({ ...req, policyPreset: preset, risk, suggestedRule })
       })
   }
 

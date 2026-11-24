@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { HARNESS_IDS, type PersistedState } from '@shared/types'
 import { DEFAULT_APPEARANCE, DEFAULT_CONVERSATION, normalizeAppearance, normalizeConversation, normalizeHarnessSettings } from '@shared/settings'
 import { DEFAULT_HERDR_SETTINGS, normalizeHerdrSettings } from '@shared/herdr'
-import { isTrustPreset } from '@shared/tool-policy'
+import { isTrustPreset, normalizePermissionRules } from '@shared/tool-policy'
 
 const DEFAULT_STATE: PersistedState = {
   projects: [],
@@ -40,6 +40,7 @@ export class StateStore {
           ? raw.projects.map((p) => ({
               ...p,
               trustPreset: isTrustPreset(p.trustPreset) ? p.trustPreset : 'approval',
+              permissionRules: normalizePermissionRules(p.permissionRules),
             }))
           : [],
         threads: Array.isArray(raw.threads)
